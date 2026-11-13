@@ -1,0 +1,34 @@
+Environment: Linux x86_64; CPython 3.13; Lua 5.4 shared library
+Scope: mocked API and geometry; no Luau compiler, Roblox physics, Xeno, live game or second client
+
+PASS: syntax parsed for 12 Lua files (Lua 5.4, not Luau compiler)
+PASS: misc tab receives working controls with correct defaults
+PASS: spin rotates the character, not camera, preserving position and velocity
+PASS: spin reverses direction after 1.5 seconds
+PASS: spin is time-based at 30, 60 and 144 FPS
+PASS: spin speed slider takes effect without restarting
+PASS: spin toggle immediately restores AutoRotate
+PASS: original false AutoRotate and newer game writes are preserved
+PASS: anchored characters pause spin and recover after unanchoring
+PASS: bhop requests a normal jump with configured power
+PASS: bhop does not jump in the air and repeats after landing
+PASS: jumping state or missing floor cannot produce another jump
+PASS: jump cooldown prevents repeated requests on a stale grounded state
+PASS: jump power slider updates live and restores original on disable
+PASS: JumpHeight mode uses equivalent launch power and restores height
+PASS: JumpHeight follows gravity changes
+PASS: invalid or zero gravity pauses height-mode hopping
+PASS: changing jump mode releases the previously owned property
+PASS: game jump-power changes during bhop become the restoration value
+PASS: disable does not overwrite a newer external jump-power value
+PASS: disabled Jumping state is respected
+PASS: death and seated/swimming/climbing/ragdoll states suspend both features
+PASS: zero health, explicit death flags and platform stand suspend movement
+PASS: freecam pauses both features and leaving freecam resumes them
+PASS: respawn restores old properties and configures new R6/R15 characters
+PASS: root replacement releases old spin ownership and uses the new root
+PASS: shutdown restores properties and disconnects the physics callback
+PASS: Stepped fallback uses delta-time, not the first time parameter
+PASS: closed shared UI restores owned movement properties
+PASS: a jump-request failure disables only bhop, leaving spin running
+RESULT: 29/29 mocked misc regression tests passed
