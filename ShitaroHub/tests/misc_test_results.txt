@@ -1,0 +1,45 @@
+Environment: Linux x86_64; CPython 3.13; Lua 5.4 shared library
+Scope: mocked API/geometry; no Roblox physics, Luau compiler, Xeno or server execution
+
+PASS: syntax parsed for 12 Lua files (Lua 5.4, not Luau compiler)
+PASS: misc tab receives working controls with correct defaults
+PASS: spin rotates the character, not camera, preserving position and velocity
+PASS: spin reverses direction after 1.5 seconds
+PASS: spin is time-based at 30, 60 and 144 FPS
+PASS: spin speed slider takes effect without restarting
+PASS: spin toggle immediately restores AutoRotate
+PASS: original false AutoRotate and newer game writes are preserved
+PASS: anchored characters pause spin and recover after unanchoring
+PASS: enabled bhop does not jump or accelerate without Space
+PASS: Space requests a normal jump without changing height properties
+PASS: no acceleration is applied until an actual upward takeoff
+PASS: confirmed takeoff adds horizontal boost and preserves vertical velocity
+PASS: holding Space does not add more boost during the same flight
+PASS: subsequent landing and takeoff add the next boost
+PASS: releasing Space prevents repeated jumps after landing
+PASS: releasing Space before takeoff prevents the pending boost
+PASS: live acceleration slider affects the next takeoff
+PASS: zero boost retains Space-held normal hopping
+PASS: stationary jumping does not invent a horizontal direction
+PASS: movement direction controls horizontal acceleration, not camera yaw
+PASS: planar speed is capped without changing the vertical impulse
+PASS: external speed above the cap is not reduced
+PASS: normal JumpHeight mode remains entirely unchanged
+PASS: game changes to jump settings are never overwritten
+PASS: disabled Jumping state prevents jump and boost
+PASS: an active text box prevents automatic jump and boost
+PASS: loss of focus stops bhop and focus return does not boost midair
+PASS: enabling bhop while airborne does not grant a boost
+PASS: walking off a ledge while falling does not grant a boost
+PASS: repressing Space in midair cannot grant another boost
+PASS: takeoff grace handles floor transition before vertical impulse
+PASS: expired takeoff cannot apply a delayed boost
+PASS: a normal Space jump started before our callback is recognised
+PASS: freecam blocks hopping and acceleration, and resumption re-arms on ground
+PASS: death, seating, swimming, climbing and ragdoll suspend movement
+PASS: respawn preserves settings but does not change native jump properties
+PASS: disabling bhop leaves current momentum to normal game physics
+PASS: shutdown restores spin and disconnects movement updates
+PASS: Stepped fallback uses the delta-time parameter
+PASS: a jump request failure disables only bhop
+RESULT: 40/40 mocked misc regression tests passed

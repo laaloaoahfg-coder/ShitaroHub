@@ -1,0 +1,28 @@
+Environment: Linux x86_64; CPython 3.13; Lua 5.4 shared library
+Scope: mocked API/geometry; no Roblox physics, Luau compiler, Xeno or server execution
+
+PASS: syntax parsed for 12 Lua files (Lua 5.4, not Luau compiler)
+PASS: module starts and exposes enlarged controls
+PASS: large circle acquires a target outside old 150 px limit
+PASS: circle boundary still rejects outside targets
+PASS: exact aim at 1500 metres with a camera reset every frame
+PASS: head follows crouch, jump and prone at varied frame rates
+PASS: living prone/physics/platform-standing states remain targetable
+PASS: dead state, death flags and zero HP are excluded
+PASS: reparented head is not used and replacement head is reacquired
+PASS: R15 neck follows the live attachment, including rotation
+PASS: R6 neck uses the posed Motor6D head frame
+PASS: body follows torso instead of a root-height estimate
+PASS: legs aim at a real limb, not the gap, and keep that limb
+PASS: lower-leg reference is refreshed after replacement
+PASS: lock does not jump to a closer on-screen opponent
+PASS: visibility is checked against the new pose on each frame
+PASS: visible fifth candidate is not lost behind four occluded ones
+PASS: visibility filter excludes camera descendants and local avatar
+PASS: only-while-shooting gate and freecam gate stop camera writes
+PASS: game-owned Scriptable cameras and camera replacement are supported
+PASS: range and teammate filters still apply
+PASS: smoothing remains optional and moves without an immediate snap
+PASS: viewport scaling matches the configured 1080p radius
+PASS: shutdown removes the callback, circle and owned diagnostics
+RESULT: 23/23 mocked regression tests passed
