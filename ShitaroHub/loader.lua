@@ -1,18 +1,20 @@
 -- loader.lua - the one file you launch from the injector.
 --
---   loadstring(game:HttpGet("https://raw.githubusercontent.com/laaloaoahfg-coder/ShitaroHub/main/loader.lua"))()
+--   loadstring(game:HttpGet("https://raw.githubusercontent.com/laaloaoahfg-coder/ShitaroHub/main/ShitaroHub/loader.lua"))()
 --
 -- It downloads core/ui.lua and modules/*.lua from BASE_URL, compiles them and
 -- starts the menu. Optional settings go in getgenv().ShitaroConfig BEFORE
 -- the launch line:
 --
 --   getgenv().ShitaroConfig = {
---       BaseUrl = "https://raw.githubusercontent.com/laaloaoahfg-coder/ShitaroHub/main/",
+--       BaseUrl = "https://raw.githubusercontent.com/laaloaoahfg-coder/ShitaroHub/main/ShitaroHub/",
 --       Mode    = "remote",       -- "remote" | "local"
 --       Folder  = "ShitaroHub",   -- executor workspace folder used by Mode = "local"
 --   }
 
-local BASE_URL = "https://raw.githubusercontent.com/laaloaoahfg-coder/ShitaroHub/main/"
+-- The folder that holds loader.lua, core/ and modules/. The repository
+-- root only contains that folder, so the path ends with /ShitaroHub/.
+local BASE_URL = "https://raw.githubusercontent.com/laaloaoahfg-coder/ShitaroHub/main/ShitaroHub/"
 
 local env = (getgenv and getgenv()) or _G
 local cfg = env.ShitaroConfig or {}

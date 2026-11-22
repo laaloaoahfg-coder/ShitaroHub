@@ -15,6 +15,7 @@ ShitaroHub/
 │   ├── esp.lua       ESP: box, line, name, distance, skeleton, health
 │   ├── camera.lua    FOV, третье лицо, свободная камера
 │   ├── aim.lua       аимбот и круг FOV
+│   ├── trigger.lua   триггер: стреляет, когда прицел уже на игроке
 │   └── skins.lua     вкладка skins: смена модели игрока (карточка + сброс)
 ├── models/
 │   ├── angel_v2.pack модель «Ангел» (меши + текстуры + превью одним файлом, 5,4 МБ)
@@ -29,10 +30,10 @@ ShitaroHub/
 Репозиторий: `laaloaoahfg-coder/ShitaroHub`, ветка `main`. Команда для инжектора:
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/laaloaoahfg-coder/ShitaroHub/main/loader.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/laaloaoahfg-coder/ShitaroHub/main/ShitaroHub/loader.lua"))()
 ```
 
-Если репозиторий другой, поменяй `BASE_URL` в первых строках `loader.lua`.
+`BASE_URL` в первых строках `loader.lua` указывает на папку, в которой лежит сам `loader.lua`, поэтому заканчивается на `/ShitaroHub/`. Если репозиторий другой, поменяй его: без папки в пути `core/ui.lua` не скачается.
 
 ## Загрузка на GitHub
 
@@ -70,6 +71,6 @@ loadstring(readfile("ShitaroHub/loader.lua"))()
 
 ## Как это устроено
 
-`loader.lua` скачивает `core/ui.lua` и запускает его. Ядро строит общий контекст и по очереди загружает `esp`, `camera`, `aim`. Если один модуль не скачался или упал, остальные работают, а причина пишется в консоль через `warn`.
+`loader.lua` скачивает `core/ui.lua` и запускает его. Ядро строит общий контекст и по очереди загружает `esp`, `camera`, `aim`, `trigger` и `skins`. Если один модуль не скачался или упал, остальные работают, а причина пишется в консоль через `warn`.
 
 `core/ui.lua` остался одним файлом (около 3 100 строк): его части связаны десятками общих переменных.

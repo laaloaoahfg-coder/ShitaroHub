@@ -2638,6 +2638,7 @@ do
         "modules/esp.lua",
         "modules/camera.lua",
         "modules/aim.lua",
+        "modules/trigger.lua",
         "modules/skins.lua",
     }) do
         if not Loader then
@@ -2816,8 +2817,30 @@ end
 -- it afterwards is not enough: while the menu is open the write from the game
 -- is blocked at the metatable. If the executor has no hooking API the guard
 -- flag is useless and the per-frame re-assert below does the job instead.
+--
+-- Two paths never go through a plain MouseBehavior write and used to slip past
+-- the guard:
+--   * LockFirstPerson - the engine pulls the pointer to the centre on every
+--     click no matter what MouseBehavior says, so the mode is switched to
+--     Classic while the menu is open and put back on close;
+--   * ModalEnabled - captures the pointer the same way, so it is held at false.
+-- A lock that did get through (no hooking API, or the game re-hooked
+-- __newindex after us) has already warped the physical pointer by the time we
+-- see it: the GUI pointer position is sampled every frame and a jump to the
+-- exact centre is undone with the executor's relative mouse move, when it has
+-- one.
+--
+-- Wrapped in a block: only toggleMenu and releaseCursor are needed by the rest
+-- of the chunk, and the chunk already sits near Lua's 200-local limit.
+local toggleMenu
+local releaseCursor
+
+do
 local cursorLocked = false
 local cursorHookInstalled = false
+local savedMode
+local lastPointer
+local warpAt = 0
 
 local function wrapCallback(callback)
     if type(newcclosure) ~= "function" then
@@ -2829,6 +2852,58 @@ local function wrapCallback(callback)
     return ok and wrapped or callback
 end
 
+local function menuOpen()
+    return window.Visible and not uiState.closed
+end
+
+-- every write the game makes while the menu owns the pointer is refused
+local GUARDS = {
+    {
+        object = UserInputService,
+        keys = {
+            MouseBehavior = true,
+            MouseIconEnabled = true,
+            ModalEnabled = true,
+        },
+    },
+    {
+        -- LockFirstPerson is engine-side, so the write is refused as well
+        object = player,
+        keys = { CameraMode = true },
+    },
+}
+
+local function hookWrites(guard)
+    if type(getrawmetatable) ~= "function"
+        or type(hookmetamethod) ~= "function" then
+        return
+    end
+
+    local okMeta, meta = pcall(getrawmetatable, guard.object)
+
+    if not okMeta or type(meta) ~= "table" then
+        return
+    end
+
+    local old = meta.__newindex
+
+    if type(old) ~= "function" then
+        return
+    end
+
+    local wrapper = wrapCallback(function(self, key, value)
+        if cursorLocked and menuOpen() and guard.keys[key] then
+            return
+        end
+
+        return old(self, key, value)
+    end)
+
+    if pcall(hookmetamethod, guard.object, "__newindex", wrapper) then
+        guard.wrapper = wrapper
+    end
+end
+
 local function installCursorHook()
     if cursorHookInstalled then
         return
@@ -2836,34 +2911,28 @@ local function installCursorHook()
 
     cursorHookInstalled = true
 
-    if type(getrawmetatable) ~= "function"
-        or type(hookmetamethod) ~= "function" then
+    for _, guard in ipairs(GUARDS) do
+        hookWrites(guard)
+    end
+end
+
+-- a game that re-hooks __newindex after us pushes its write past the guard,
+-- so the installed hook is compared before every single re-assert
+local function verifyHooks()
+    if not cursorHookInstalled or type(getrawmetatable) ~= "function" then
         return
     end
 
-    local okMeta, meta = pcall(getrawmetatable, UserInputService)
+    for _, guard in ipairs(GUARDS) do
+        if guard.wrapper then
+            local okMeta, meta = pcall(getrawmetatable, guard.object)
 
-    if not okMeta or type(meta) ~= "table" then
-        return
-    end
-
-    local oldNewIndex = meta.__newindex
-
-    if type(oldNewIndex) ~= "function" then
-        return
-    end
-
-    pcall(hookmetamethod, UserInputService, "__newindex", wrapCallback(
-        function(self, key, value)
-            if cursorLocked
-                and not uiState.closed
-                and (key == "MouseBehavior" or key == "MouseIconEnabled") then
-                return
+            if not okMeta or type(meta) ~= "table"
+                or meta.__newindex ~= guard.wrapper then
+                hookWrites(guard)
             end
-
-            return oldNewIndex(self, key, value)
         end
-    ))
+    end
 end
 
 -- writes that have to go through even while the game is blocked
@@ -2879,6 +2948,10 @@ local function writeCursor(behavior, icon)
         if UserInputService.MouseIconEnabled ~= icon then
             UserInputService.MouseIconEnabled = icon
         end
+
+        if UserInputService.ModalEnabled then
+            UserInputService.ModalEnabled = false
+        end
     end)
 
     cursorLocked = wasLocked
@@ -2887,22 +2960,53 @@ end
 local function forceCursor()
     uiState.mouseBehavior = UserInputService.MouseBehavior
     uiState.mouseIcon = UserInputService.MouseIconEnabled
+    uiState.modalEnabled = UserInputService.ModalEnabled
 
     installCursorHook()
+
+    local okMode, mode = pcall(function()
+        return player.CameraMode
+    end)
+
+    if okMode then
+        savedMode = mode
+
+        if mode == Enum.CameraMode.LockFirstPerson then
+            pcall(function()
+                player.CameraMode = Enum.CameraMode.Classic
+            end)
+        end
+    end
+
+    lastPointer = nil
     writeCursor(Enum.MouseBehavior.Default, true)
     cursorLocked = true
 end
 
-local function releaseCursor()
+releaseCursor = function()
     cursorLocked = false
+
+    if savedMode ~= nil then
+        pcall(function()
+            player.CameraMode = savedMode
+        end)
+
+        savedMode = nil
+    end
 
     writeCursor(
         uiState.mouseBehavior or Enum.MouseBehavior.Default,
         uiState.mouseIcon ~= false
     )
+
+    pcall(function()
+        UserInputService.ModalEnabled = uiState.modalEnabled == true
+    end)
+
+    lastPointer = nil
 end
 
-local function toggleMenu()
+toggleMenu = function()
     closeLanguageMenu()
     window.Visible = not window.Visible
     gesture = nil
@@ -2915,22 +3019,84 @@ local function toggleMenu()
     end
 end
 
+-- A lock that got through already moved the pointer, and nothing in Lua can
+-- place it back absolutely; mousemoverel is the only way to undo the warp, and
+-- only some executors have it.
+local function canMovePointer()
+    return type(mousemoverel) == "function"
+end
+
+local function settlePointer()
+    local okLoc, location = pcall(function()
+        return UserInputService:GetMouseLocation()
+    end)
+
+    if not okLoc or typeof(location) ~= "Vector2" then
+        return
+    end
+
+    local previous = lastPointer
+    lastPointer = location
+
+    if not previous or not menuOpen() or not canMovePointer() then
+        return
+    end
+
+    local cam = workspace.CurrentCamera
+    local viewport = cam and cam.ViewportSize
+
+    if not viewport then
+        return
+    end
+
+    local center = viewport * 0.5
+
+    -- only an exact recentre counts: a player moving the mouse towards the
+    -- middle of the screen must not be pulled back
+    if (location - center).Magnitude > 2
+        or (previous - center).Magnitude <= 12
+        or os.clock() - warpAt < 0.2 then
+        return
+    end
+
+    warpAt = os.clock()
+
+    local back = previous - center
+
+    pcall(mousemoverel, back.X, back.Y)
+    lastPointer = previous
+end
+
 -- Keep re-asserting it: games re-lock the mouse on every one of their frames.
 -- Heartbeat is checked as well, because it runs after the game's own render
 -- step, so the cursor wins even against a camera script that never gives up.
 local function assertCursor()
-    if not window.Visible then
+    if not menuOpen() then
         -- menu closed: the game gets its mouse back
         cursorLocked = false
         return
     end
 
-    if UserInputService.MouseBehavior == Enum.MouseBehavior.Default
-        and UserInputService.MouseIconEnabled then
-        return
+    verifyHooks()
+
+    if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default
+        or not UserInputService.MouseIconEnabled
+        or UserInputService.ModalEnabled then
+        writeCursor(Enum.MouseBehavior.Default, true)
     end
 
-    writeCursor(Enum.MouseBehavior.Default, true)
+    if savedMode ~= nil
+        and player.CameraMode == Enum.CameraMode.LockFirstPerson then
+        cursorLocked = false
+
+        pcall(function()
+            player.CameraMode = Enum.CameraMode.Classic
+        end)
+
+        cursorLocked = true
+    end
+
+    settlePointer()
 end
 
 connect(RunService.RenderStepped, assertCursor)
@@ -2957,6 +3123,7 @@ if RunService.BindToRenderStep then
         )
     end)
 end
+end
 
 -- Full shutdown: called from the confirm dialog before the gui is destroyed.
 uiState.shutdown = function(wasOpen)
@@ -2965,7 +3132,6 @@ uiState.shutdown = function(wasOpen)
     end
 
     uiState.closed = true
-    cursorLocked = false
 
     pcall(function()
         RunService:UnbindFromRenderStep("ShitaroCursor")
