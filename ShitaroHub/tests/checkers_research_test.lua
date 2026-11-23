@@ -46,12 +46,15 @@ local turn=new("StringValue","Turn",board);turn.Value="Local"
 local rep=new("ReplicatedStorage","ReplicatedStorage")
 local initial=new("RemoteEvent","Move",rep);initial.OnClientEvent=signal()
 local other=new("RemoteEvent","Vote",rep);other.OnClientEvent=signal()
+local gameEvent=new("RemoteEvent","GameEvent",rep);gameEvent.OnClientEvent=signal()
 local first=new("ReplicatedFirst","ReplicatedFirst")
 local me=new("Player","Local");me.DisplayName="Local";me.UserId=1
 local gui=new("PlayerGui","PlayerGui",me)
 local label=new("TextLabel","Rules",gui);label.Text="American Checkers";label.Visible=true;label.Position="p";label.Size="s"
 local secretChat=new("TextLabel","Chat",gui);secretChat.Text="private message";secretChat.Visible=true
 local textBox=new("TextBox","Entry",gui);textBox.Text="private typing";textBox.Visible=true
+for i=1,300 do local x=new("TextLabel","Filler"..i,gui);x.Text="filler";x.Visible=true end
+local lateResult=new("TextLabel","ModeResult",gui);lateResult.Text="Classic wins";lateResult.Visible=true
 local char=new("Model","Character",workspace);me.Character=char
 local humanoid=new("Humanoid","Humanoid",char);humanoid.SeatPart=seat;seat.Occupant=humanoid
 local players={LocalPlayer=me};function players:GetPlayers() return {me} end;function players:GetPlayerFromCharacter(m) if m==char then return me end end
@@ -75,6 +78,7 @@ local function run(enabled)
         if waits==1 then
             for i=1,45 do initial.OnClientEvent:Fire({turn="Enemy",token="secret-test",row=3}) end
             other.OnClientEvent:Fire("Checkers with Skips")
+            for i=1,60 do gameEvent.OnClientEvent:Fire("PieceMoved",i) end
             piece.Position=vec(3,0,3);turn.Value="Enemy";label.Text="Checkers with Skips"
             if enabled then
                 currentMethod="FireServer"
@@ -95,14 +99,17 @@ local function run(enabled)
     local r=assert(env.ShitaroCheckersResearchReport)
     assert(copied==r and r:find("END OF REPORT",1,true))
     assert(r:find("seat=#",1,true) and r:find("group=near_part",1,true))
+    assert(r:find("CAPABILITIES hookmetamethod=true",1,true))
     assert(r:find("pos=3.00,0.00,3.00",1,true) and r:find('value="Enemy"',1,true))
     assert(r:find('text="Checkers with Skips"',1,true))
+    assert(r:find('ModeResult class=TextLabel',1,true),"important GUI must be prioritized beyond cap")
+    assert(select(2,r:gsub("direction=IN remote=#%d+:ReplicatedStorage.GameEvent", ""))==60,"late game events must not hit old limit")
     assert(r:find('NOT_OBSERVED',1,true),"disappeared pieces must be recorded")
     assert(r:find('remote=#',1,true) and r:find('ReplicatedStorage.NewVote',1,true))
     assert(r:find('token=<redacted>',1,true) and not r:find('secret-test',1,true))
     assert(not r:find('private message',1,true) and not r:find('private typing',1,true))
     assert(not env.ShitaroFinishCheckersResearch)
-    assert(r:find("observedEvents=47",1,true) or enabled)
+    assert(r:find("observedEvents=107",1,true) or enabled)
     assert(select(2,r:gsub("direction=IN remote=#%d+:ReplicatedStorage.Move", ""))==40)
     if enabled then
         -- This remote hit its cap, but other remotes are independently recorded.

@@ -11,12 +11,15 @@ local options = type(env.ShitaroCheckersResearchConfig) == "table" and env.Shita
 local CAPTURE_OUT = options.CaptureOutgoing == true -- installs a persistent, inert-when-stopped namecall hook
 local DURATION, INTERVAL = 300, 1
 local MAX_REMOTE, MAX_IN_EVENTS, MAX_OUT_EVENTS, MAX_PER_REMOTE = 180, 600, 200, 40
+-- These names were identified in a real capture. Reserve capacity so noisy
+-- unrelated events cannot consume the game/vote log early in a match.
+local MAX_PRIORITY_EVENTS, MAX_PRIORITY_PER_DIRECTION = 1200, 800
 local MAX_SEATS, MAX_PARTS, MAX_GUI, MAX_STATE = 60, 450, 250, 350
-local MAX_LOG_CHARS = 1300000
+local MAX_LOG_CHARS, MAX_NORMAL_CHARS = 2000000, 1400000
 local start = os.clock()
-local links, lines, charCount = {}, {}, 0
+local links, lines, charCount, normalChars = {}, {}, 0, 0
 local dropped, received, captured, failures = 0, 0, 0, 0
-local capturedIn, capturedOut = 0, 0
+local capturedIn, capturedOut, capturedPriority = 0, 0, 0
 local eventCount, watched, ids = {}, {}, setmetatable({}, {__mode="k"})
 local nextId, stopped, controls = 0, false, nil
 local previousStop = env.ShitaroFinishCheckersResearch
@@ -42,10 +45,13 @@ local function id(inst)
     return ids[inst]
 end
 local function stamp() return string.format("%.2f", os.clock()-start) end
-local function log(line)
+local function log(line, priority)
     line = clean(line, 6000)
-    if charCount + #line + 1 > MAX_LOG_CHARS then dropped = dropped + 1; return end
+    if charCount + #line + 1 > MAX_LOG_CHARS or (not priority and normalChars + #line + 1 > MAX_NORMAL_CHARS) then
+        dropped = dropped + 1; return
+    end
     lines[#lines+1] = line; charCount = charCount + #line + 1
+    if not priority then normalChars = normalChars + #line + 1 end
 end
 local function xyz(v)
     return safe(function() return string.format("%.2f,%.2f,%.2f",v.X,v.Y,v.Z) end, "?")
@@ -109,17 +115,29 @@ local function argsText(...)
     if a.n > 12 then out[#out+1]="<args-truncated>" end
     return table.concat(out," ")
 end
+local function isPriorityRemote(remote)
+    -- Exact matching avoids drawing conclusions from unrelated similarly named events.
+    return remote.Parent == ReplicatedStorage and (remote.Name == "GameEvent" or remote.Name == "ModeVoteEvent")
+end
 local function traffic(direction, remote, ...)
     if stopped or isPrivate(remote) then return end
     received = received + 1
     local incoming = direction == "IN"
+    local priority = isPriorityRemote(remote)
     local counts = eventCount[remote] or {incoming=0,outgoing=0};eventCount[remote]=counts
     local category = incoming and "incoming" or "outgoing"
     counts[category]=counts[category]+1
-    if counts[category] > MAX_PER_REMOTE or (incoming and capturedIn >= MAX_IN_EVENTS) or (not incoming and capturedOut >= MAX_OUT_EVENTS) then return end
-    if incoming then capturedIn=capturedIn+1 else capturedOut=capturedOut+1 end
+    local limit = priority and MAX_PRIORITY_PER_DIRECTION or MAX_PER_REMOTE
+    if counts[category] > limit then return end
+    if priority then
+        if capturedPriority >= MAX_PRIORITY_EVENTS then return end
+        capturedPriority=capturedPriority+1
+    else
+        if (incoming and capturedIn >= MAX_IN_EVENTS) or (not incoming and capturedOut >= MAX_OUT_EVENTS) then return end
+        if incoming then capturedIn=capturedIn+1 else capturedOut=capturedOut+1 end
+    end
     captured = captured + 1
-    log("EVENT t="..stamp().." direction="..direction.." remote=#"..id(remote)..":"..path(remote).." "..argsText(...))
+    log("EVENT t="..stamp().." direction="..direction.." remote=#"..id(remote)..":"..path(remote).." "..argsText(...),priority)
 end
 local watchedCount = 0
 local function watchRemote(inst)
@@ -193,6 +211,13 @@ local function describe(inst)
         a[#a+1]="occupant="..(occupant and path(occupant) or "none")
     end
     if inst:IsA("ValueBase") then a[#a+1]="value="..formatValue(property(inst,"Value"),0,nil,inst.Name) end
+    if inst:IsA("Decal") or inst:IsA("Texture") then
+        a[#a+1]="texture="..clean(property(inst,"Texture"));a[#a+1]="transparency="..tostring(property(inst,"Transparency"))
+    end
+    if inst:IsA("SpecialMesh") then
+        a[#a+1]="mesh="..clean(property(inst,"MeshId"));a[#a+1]="texture="..clean(property(inst,"TextureId"))
+        a[#a+1]="scale="..xyz(property(inst,"Scale"))
+    end
     if inst:IsA("ClickDetector") then a[#a+1]="maxDistance="..tostring(property(inst,"MaxActivationDistance")) end
     if inst:IsA("ProximityPrompt") then
         a[#a+1]="action="..formatValue(property(inst,"ActionText"));a[#a+1]="enabled="..tostring(property(inst,"Enabled"))
@@ -282,7 +307,8 @@ local function snapshot(index)
                 or inst:IsA("SurfaceGui") or inst:IsA("BillboardGui")
                 or inst:IsA("TextLabel") or inst:IsA("TextButton")
                 or inst:IsA("ImageLabel") or inst:IsA("ImageButton")
-                or inst:IsA("LuaSourceContainer") then
+                or inst:IsA("LuaSourceContainer") or inst:IsA("Decal") or inst:IsA("Texture")
+                or inst:IsA("SpecialMesh") or inst:IsA("Highlight") or inst:IsA("Attachment") then
                 if not isPrivate(inst) and not areaSeen[inst] then
                     areaSeen[inst]=true;areaCount=areaCount+1;changed("area_state",inst)
                 end
@@ -299,10 +325,23 @@ local function snapshot(index)
     end
     local pg=player:FindFirstChildOfClass("PlayerGui")
     if pg then
+        local priorityGui, otherGui = {}, {}
         for _, inst in ipairs(pg:GetDescendants()) do
             if not isPrivate(inst) and not inst:IsA("TextBox") and (inst:IsA("GuiObject") or inst:IsA("LayerCollector")) then
                 guiCount=guiCount+1
-                if guiCount <= MAX_GUI then changed("gui",inst) end
+                local name=path(inst):lower()
+                if name:find("turn",1,true) or name:find("vote",1,true) or name:find("mode",1,true)
+                    or name:find("check",1,true) or name:find("gameui",1,true) or name:find("result",1,true) or name:find("rule",1,true)
+                    or name:find("timer",1,true) or name:find("winner",1,true) then
+                    priorityGui[#priorityGui+1]=inst
+                else otherGui[#otherGui+1]=inst end
+            end
+        end
+        local taken=0
+        for _, group in ipairs({priorityGui,otherGui}) do
+            for _, inst in ipairs(group) do
+                if taken >= MAX_GUI then break end
+                taken=taken+1;changed("gui",inst)
             end
         end
     end
@@ -369,11 +408,17 @@ local function finish(report)
 end
 
 local ok,err=xpcall(function()
-    log("SHITAROHUB CHECKERS RESEARCH v1")
+    log("SHITAROHUB CHECKERS RESEARCH v2")
     log("UTC="..os.date("!%Y-%m-%d %H:%M:%S").." placeId="..tostring(game.PlaceId).." gameId="..tostring(game.GameId).." jobId="..tostring(game.JobId))
     log("PRIVACY: player names, IDs, server ID, gameplay state and network argument strings are included; review before sharing. Buffers, chat GUI and text input are omitted; secret-key redaction is best effort only. No automatic upload.")
     log("LIMITATIONS: client observations only; server scripts/source and InvokeServer responses unavailable. Remote payloads and instance lists are bounded. No automatic move or vote is made.")
     log("OUTGOING "..hookStatus)
+    log("CAPABILITIES hookmetamethod="..tostring(type(hookmetamethod)=="function")
+        .." getnamecallmethod="..tostring(type(getnamecallmethod)=="function")
+        .." fireclickdetector="..tostring(type(fireclickdetector)=="function")
+        .." fireproximityprompt="..tostring(type(fireproximityprompt)=="function")
+        .." firesignal="..tostring(type(firesignal)=="function")
+        .." getconnections="..tostring(type(getconnections)=="function"))
     for _, p in ipairs(Players:GetPlayers()) do log("PLAYER name="..clean(p.Name).." display="..clean(p.DisplayName).." userId="..tostring(p.UserId).." local="..tostring(p==player).." attrs={"..attrs(p).."}") end
     for _, r in ipairs(roots()) do
         local found,e=pcall(discoverRemotes,r)
@@ -415,9 +460,9 @@ for _, link in ipairs(links) do pcall(function() link:Disconnect() end) end
 if gui then pcall(function() gui:Destroy() end) end
 if env.ShitaroFinishCheckersResearch==requestStop then env.ShitaroFinishCheckersResearch=nil end
 -- Final summary is appended independently of the capture-size limit.
-lines[#lines+1]="SUMMARY elapsed="..stamp().." status="..(ok and "finished" or "error").." observedEvents="..received.." recordedEvents="..captured.." recordedIn="..capturedIn.." recordedOut="..capturedOut.." watchedRemotes="..watchedCount.." errors="..failures.." droppedReportLines="..dropped
+lines[#lines+1]="SUMMARY elapsed="..stamp().." status="..(ok and "finished" or "error").." observedEvents="..received.." recordedEvents="..captured.." recordedIn="..capturedIn.." recordedOut="..capturedOut.." recordedPriority="..capturedPriority.." watchedRemotes="..watchedCount.." errors="..failures.." droppedReportLines="..dropped
 for remote, counts in pairs(eventCount) do
-    lines[#lines+1]="EVENT_TOTAL remote=#"..id(remote)..":"..path(remote).." in="..counts.incoming.." out="..counts.outgoing.." perDirectionLimit="..MAX_PER_REMOTE
+    lines[#lines+1]="EVENT_TOTAL remote=#"..id(remote)..":"..path(remote).." in="..counts.incoming.." out="..counts.outgoing.." perDirectionLimit="..(isPriorityRemote(remote) and MAX_PRIORITY_PER_DIRECTION or MAX_PER_REMOTE)
 end
 if not ok then lines[#lines+1]="FATAL "..clean(err) end
 lines[#lines+1]="END OF REPORT"
