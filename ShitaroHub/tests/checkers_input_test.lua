@@ -128,6 +128,16 @@ waitHook=function() if frames==heldFrame+3 then env.controller.running=false end
 assert(pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart))
 waitHook=nil;assert(#clicks==beforeHeld+2 and clicks[#clicks-1].down and not clicks[#clicks].down and gui.Enabled,"virtual button releases after Stop")
 env.controller.running=true
+-- Prefer a held press/release where available; Stop after down must still
+-- release, restore cursor and never fall back to an additional click.
+local pressCount,releaseCount=0,0
+env.mouse1press=function() pressCount=pressCount+1 end
+env.mouse1release=function() releaseCount=releaseCount+1 end
+actualTarget=plannedPart;local heldMouseFrame=frames
+waitHook=function() if frames==heldMouseFrame+3 then env.controller.running=false end end
+assert(pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart))
+waitHook=nil;assert(pressCount==1 and releaseCount==1 and gui.Enabled and not env.controller.running)
+env.controller.running=true;env.mouse1press=nil;env.mouse1release=nil
 -- Exercise the real alternate-detector selection logic separately.
 local alternate=section("function adapter.retryDetector(id)","function adapter.retryPiece(id,stillPending,method)")
 local hitDet,rootDet={},{}
@@ -185,22 +195,21 @@ local retryEnv=setmetatable({adapter=retryAdapter,Workspace=world,player={Charac
     RaycastParams={new=function() return {} end},Enum={RaycastFilterType={Exclude=1}},
 },{__index=_G})
 local barrierSource=section("local function possibleBoardBarrier(obj)","-- WorldToViewportPoint")
-retryEnv.possibleBoardBarrier=assert(load(barrierSource.."\nreturn possibleBoardBarrier","barrier","t",retryEnv))()
+retryEnv.possibleBoardBarrier,retryEnv.possibleCountHelper=assert(load(barrierSource.."\nreturn possibleBoardBarrier,possibleCountHelper","barrier","t",retryEnv))()
 assert(load(retry,"retry","t",retryEnv))()
 assert(not retryAdapter.retryPiece("Piece2_1") and count==0,"occluded piece must not be clicked")
 assert(logs[#logs]=="RETRY_GUARD:raycast_other_object")
 hit=piece;assert(retryAdapter.retryPiece("Piece2_1") and count==1,"visible piece may get one retry")
-assert(selectedMethod=="touch" and lastX==200 and lastY==150 and lastGuiPoint.Y==114,"viewport input differs from inset-relative GUI hit test")
+assert(selectedMethod=="mouse" and lastX==200 and lastY==150 and lastGuiPoint.Y==114,"viewport input differs from inset-relative GUI hit test")
 assert(retryAdapter.retryPiece("Piece2_1",function() return true end,"virtual") and selectedMethod=="vim3d","explicit virtual retry uses the virtual pointer path")
 count=count-1
--- If touch could not even start, fall back to the mouse; no second method is
--- attempted after a touch start reported success.
+-- Prefer the cursor; only fall back to touch when no mouse press started.
 local methodOrder={}
 retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint)
     methodOrder[#methodOrder+1]=method;assert(valid())
-    return method~="touch"
+    return method~="mouse"
 end
-assert(retryAdapter.retryPiece("Piece2_1") and #methodOrder==2 and methodOrder[1]=="touch" and methodOrder[2]=="mouse")
+assert(retryAdapter.retryPiece("Piece2_1") and #methodOrder==2 and methodOrder[1]=="mouse" and methodOrder[2]=="touch")
 retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint)
     assert(valid());count=count+1;selectedMethod=method;lastGuiPoint=guiPoint;lastX=x;lastY=y;return true
 end
@@ -285,6 +294,40 @@ assert(pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plan
 assert(#clicks==clicksBeforeBarrier+2)
 actualTarget=wall
 assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart,function(o) return o==barrier end),"other pointer target must still block")
+world.Raycast=oldRay
+-- A possible 1x1 PlayerCount is permitted only by exact table identity and
+-- disabled noninteractive GUI; a similarly sized unknown part still blocks.
+local functional={Parent=tableModel}
+local countHelper={Parent=functional,Transparency=1,CanCollide=false,CanQuery=true,Anchored=true,Size=vec(1,1,1)}
+function countHelper:IsA(k) return k=="Part" end
+local countGui={Enabled=false};function countGui:IsA(k) return k=="BillboardGui" end
+function countHelper:GetDescendants() return {countGui} end
+function functional:FindFirstChild(n) if n=="PlayerCount" then return countHelper end end
+function tableModel:FindFirstChild(name)
+    if name=="Board" then return boardFolder elseif name=="Pieces" then return piecesFolder elseif name=="Functional" then return functional end
+end
+assert(retryEnv.possibleCountHelper(countHelper))
+countGui.Enabled=true;assert(not retryEnv.possibleCountHelper(countHelper),"enabled GUI must block");countGui.Enabled=false
+local detector={};function detector:IsA(k) return k=="ClickDetector" end
+function countHelper:GetDescendants() return {countGui,detector} end
+assert(not retryEnv.possibleCountHelper(countHelper),"interactive helper must block")
+function countHelper:GetDescendants() return {countGui} end
+local other={};assert(not retryEnv.possibleCountHelper(other),"unknown object is not the count helper")
+second=piece
+function world:Raycast(origin,direction,params)
+    local skipped={};for _,o in ipairs(params.FilterDescendantsInstances) do skipped[o]=true end
+    if not skipped[countHelper] then return {Instance=countHelper} end
+    if not skipped[barrier] then return {Instance=barrier} end
+    return second and {Instance=second}
+end
+retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint,targetPart,allowedBarrier)
+    assert(method=="mouse" and valid())
+    assert(allowedBarrier(countHelper) and allowedBarrier(barrier) and not allowedBarrier(wall))
+    return true
+end
+assert(retryAdapter.retryPiece("Piece2_1"),"known helper and enclosure can be checked in either order")
+second=wall;assert(not retryAdapter.retryPiece("Piece2_1"),"other objects behind helper still block")
+countGui.Enabled=true;second=piece;assert(not retryAdapter.retryPiece("Piece2_1"),"enabled helper cannot be skipped")
 world.Raycast=oldRay
 -- Touch starts and ends even if Stop happens in the middle; GUI testing uses inset coordinates.
 services.VirtualInputManager=vim;overlays={}

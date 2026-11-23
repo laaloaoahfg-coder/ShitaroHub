@@ -248,9 +248,11 @@ local function observedMouseTarget(expectedPart,method,allowedBarrier)
     local role="other"
     local functional=model and model:FindFirstChild("Functional")
     local box=functional and functional:FindFirstChild("Box")
+    local count=functional and functional:FindFirstChild("PlayerCount")
     local board=model and model:FindFirstChild("Board")
     local pieces=model and model:FindFirstChild("Pieces")
     if target==box then role="functional_box"
+    elseif target==count then role="player_count"
     elseif board and safeDescendant(target,board) then role="board"
     elseif pieces and safeDescendant(target,pieces) then role="other_piece" end
     log("POINTER_TARGET",method.." "..role)
@@ -297,7 +299,9 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
             return true
         end
         if method=="mouse" then
-            if type(mousemoveabs)~="function" or (type(mouse1click)~="function" and (type(mouse1press)~="function" or type(mouse1release)~="function")) then return false end
+            if type(mousemoveabs)~="function" or (type(mouse1click)~="function" and (type(mouse1press)~="function" or type(mouse1release)~="function")) then
+                log("INPUT","mouse move/click API unavailable");return false
+            end
             local got,old=pcall(function() return UserInputService:GetMouseLocation() end)
             if not pcall(mousemoveabs,math.floor(x),math.floor(y)) then return false end
             -- Give the engine a frame to observe the moved cursor before the
@@ -309,11 +313,13 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
                 if stillReady~=true then return stillReady end
                 if not observedMouseTarget(targetPart,"mouse",allowedBarrier) then return false end
                 local didClick
-                if type(mouse1click)=="function" then didClick=pcall(mouse1click)
-                else
-                    local down=pcall(mouse1press);local up=pcall(mouse1release)
-                    didClick=down and up
-                end
+                if type(mouse1press)=="function" and type(mouse1release)=="function" then
+                    local down=pcall(mouse1press)
+                    if down then pcall(function() RunService.RenderStepped:Wait() end) end
+                    local up=pcall(mouse1release)
+                    didClick=down
+                    log("INPUT","mouse down="..tostring(down).." up="..tostring(up))
+                else didClick=pcall(mouse1click) end
                 if didClick then pcall(function() RunService.RenderStepped:Wait() end) end
                 log("INPUT", "mouse click invoked="..tostring(didClick))
                 return didClick
@@ -573,6 +579,26 @@ local function possibleBoardBarrier(obj)
     end)
     return ok and result==true
 end
+-- A separate, known table helper in the research dump is a 1x1x1
+-- PlayerCount part with a disabled BillboardGui. Only that exact child of
+-- this table's Functional folder is eligible; its appearance in the latest
+-- log remains unproven. Never disable or mutate it.
+local function possibleCountHelper(obj)
+    local ok,result=pcall(function()
+        if not model or not obj then return false end
+        local folder=model:FindFirstChild("Functional")
+        if not folder or folder:FindFirstChild("PlayerCount")~=obj or not obj:IsA("Part") then return false end
+        if obj.Transparency~=1 or obj.CanCollide~=false or obj.CanQuery~=true or obj.Anchored~=true then return false end
+        local size=obj.Size
+        if math.abs(size.X-1)>0.05 or math.abs(size.Y-1)>0.05 or math.abs(size.Z-1)>0.05 then return false end
+        for _,child in ipairs(obj:GetDescendants()) do
+            if child:IsA("ClickDetector") or child:IsA("ProximityPrompt") then return false end
+            if (child:IsA("BillboardGui") or child:IsA("SurfaceGui")) and child.Enabled~=false then return false end
+        end
+        return true
+    end)
+    return ok and result==true
+end
 -- WorldToViewportPoint matches physical mouse/touch screen coordinates;
 -- WorldToScreenPoint accounts for GUI inset and is used ONLY for GUI hit test.
 local function retryVisible(part,stillCurrent,stillPending,method)
@@ -595,22 +621,23 @@ local function retryVisible(part,stillCurrent,stillPending,method)
         end)
         if not ok or not point or not guiPoint then return nil,"projection_failed" end
         if not onScreen or point.Z<=0 then return nil,"offscreen" end
-        local hitOk,hit,barrier=pcall(function()
+        local hitOk,hit,barriers=pcall(function()
             local params=RaycastParams.new()
             params.FilterType=Enum.RaycastFilterType.Exclude
             local excluded={camera};if player.Character then excluded[#excluded+1]=player.Character end
-            params.FilterDescendantsInstances=excluded
+            local passed={}
             local origin=camera.CFrame.Position
             local direction=(worldPoint-origin)*1.02
-            local first=Workspace:Raycast(origin,direction,params)
-            local barrier=first and first.Instance
-            if barrier and possibleBoardBarrier(barrier) then
-                if not loggedBarrier then loggedBarrier=true;log("RETRY_BARRIER","possible board enclosure; verifying target behind it") end
-                excluded[#excluded+1]=barrier
+            for _=1,3 do
                 params.FilterDescendantsInstances=excluded
-                return Workspace:Raycast(origin,direction,params),barrier
+                local result=Workspace:Raycast(origin,direction,params)
+                local obstacle=result and result.Instance
+                local kind=obstacle and (possibleBoardBarrier(obstacle) and "board_enclosure" or possibleCountHelper(obstacle) and "player_count")
+                if not kind or #passed>=2 then return result,passed end
+                if not loggedBarrier then loggedBarrier=true;log("RETRY_BARRIER","candidate="..kind.."; verifying target behind it") end
+                passed[#passed+1]=obstacle;excluded[#excluded+1]=obstacle
             end
-            return first,nil
+            return nil,passed
         end)
         if not hitOk then return nil,"raycast_error" end
         if not hit or not hit.Instance then return nil,"raycast_no_hit" end
@@ -623,7 +650,8 @@ local function retryVisible(part,stillCurrent,stillPending,method)
                 loggedBlock=true
                 local functional=model and model:FindFirstChild("Functional")
                 local box=functional and functional:FindFirstChild("Box")
-                local role=hit.Instance==box and "functional_box" or kind
+                local count=functional and functional:FindFirstChild("PlayerCount")
+                local role=hit.Instance==box and "functional_box" or (hit.Instance==count and "player_count" or kind)
                 local scope=model and safeDescendant(hit.Instance,model) and "table" or "outside_table"
                 local okInfo,transparency,canQuery,canCollide,anchored,size=pcall(function()
                     return hit.Instance.Transparency,hit.Instance.CanQuery,hit.Instance.CanCollide,hit.Instance.Anchored,hit.Instance.Size
@@ -638,7 +666,7 @@ local function retryVisible(part,stillCurrent,stillPending,method)
             end
             return nil,"raycast_other_object"
         end
-        return {viewport=point,gui=guiPoint,barrier=barrier}
+        return {viewport=point,gui=guiPoint,barriers=barriers}
     end
     local point,reason,sample
     for i=1,#offsets do
@@ -647,10 +675,13 @@ local function retryVisible(part,stillCurrent,stillPending,method)
         if why~="sample_unavailable" then reason=why end
     end
     if not point then log("RETRY_GUARD",reason or "sample_unavailable");return false end
-    log("RETRY_SAMPLE","index="..sample.." total="..#offsets.." possible_barrier="..tostring(point.barrier~=nil))
-    local currentBarrier=point.barrier
+    log("RETRY_SAMPLE","index="..sample.." total="..#offsets.." possible_barriers="..#point.barriers)
+    local currentBarriers=point.barriers
     local function allowedBarrier(obj)
-        return obj~=nil and obj==currentBarrier and possibleBoardBarrier(obj)
+        for _,candidate in ipairs(currentBarriers) do
+            if obj==candidate and (possibleBoardBarrier(obj) or possibleCountHelper(obj)) then return true end
+        end
+        return false
     end
     local function valid()
         if stillPending and not stillPending() then return false end
@@ -659,7 +690,7 @@ local function retryVisible(part,stillCurrent,stillPending,method)
         if not current then log("RETRY_GUARD",why);return false end
         if math.abs(current.viewport.X-point.viewport.X)>=2 or math.abs(current.viewport.Y-point.viewport.Y)>=2
             or math.abs(current.gui.X-point.gui.X)>=2 or math.abs(current.gui.Y-point.gui.Y)>=2 then return false end
-        currentBarrier=current.barrier
+        currentBarriers=current.barriers
         return true
     end
     local x,y=point.viewport.X,point.viewport.Y
@@ -667,12 +698,15 @@ local function retryVisible(part,stillCurrent,stillPending,method)
     if method=="virtual" then
         return pointerClick(x,y,"vim3d",nil,valid,point.gui,part,allowedBarrier)
     end
+    -- Prefer the player's cursor when the executor supports it. Only fall
+    -- back to touch if a mouse press was not started, never immediately
+    -- duplicate a press that might still be acknowledged by the game.
+    if pointerClick(x,y,"mouse",nil,valid,point.gui,part,allowedBarrier) then return true end
+    if stillPending and not stillPending() then return false end
     if UserInputService.TouchEnabled then
         if pointerClick(x,y,"touch",nil,valid,point.gui,part,allowedBarrier) then return true end
         if stillPending and not stillPending() then return false end
     end
-    if pointerClick(x,y,"mouse",nil,valid,point.gui,part,allowedBarrier) then return true end
-    if stillPending and not stillPending() then return false end
     return false
 end
 function adapter.retryPiece(id,stillPending,method)
