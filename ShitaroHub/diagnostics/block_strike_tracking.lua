@@ -6,7 +6,7 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local localPlayer = Players.LocalPlayer
-local SAMPLES, INTERVAL = 60, 0.5
+local SAMPLES, INTERVAL = 181, 1 -- up to three minutes; can stop early
 local MAX_PACKET_BYTES, MAX_RAW_PER_PHASE = 512, 8
 local started, lines, links = os.clock(), {}, {}
 local received, processed, accepted, bad = 0, 0, 0, 0
@@ -106,13 +106,13 @@ local function processPacket(payload)
     local signature, kind = string.byte(raw,1), string.byte(raw,2)
     if signature ~= 6 or (kind ~= 0 and kind ~= 1) then return end
     accepted = accepted + 1
-    -- Observed (not fully documented) delta spawn shape: varint UserId,
+    -- Observed (not fully documented) spawn/full-state shape: varint UserId,
     -- 2-byte entity id, flags, three little-endian float32 coordinates.
-    -- Only trust a mapping after it agrees with that player's live world root.
+    -- Map both packet kinds; only trust after matching a live world root.
     for _, player in ipairs(roster) do
         local state = states[player]
         if state then refreshIdentity(player, state, now) end
-        if state and not state.id and kind == 1 and state.needle then
+        if state and not state.id and state.needle then
             local idx = string.find(raw, state.needle, 1, true)
             if idx then
                 local entityAt = idx + #state.needle
@@ -189,9 +189,70 @@ local function finish(report)
     print("[Shitaro tracking] clipboard: " .. (copyOk and "copied" or "FAILED: " .. tostring(copyErr)))
     if not fileOk and not copyOk then warn("[Shitaro tracking] Both outputs failed; report follows and is in getgenv().ShitaroBlockStrikeTrackingReport"); print(report) end
 end
-print("[Shitaro tracking] Started. After starting, watch an opponent emerge and hide again; about 30 seconds.")
+-- A repeat launch requests the previous session to finish. Each session only
+-- removes the global callback if it still owns that exact callback.
+local env = (getgenv and getgenv()) or _G
+local previousStop = env.ShitaroFinishTracking
+if type(previousStop) == "function" then pcall(previousStop) end
+local stopRequested, controlGui, progressLabel = false, nil, nil
+local function requestStop() stopRequested = true end
+env.ShitaroFinishTracking = requestStop
+
+-- Optional minimal overlay: if the executor/game blocks GUI creation, the
+-- console and getgenv callback still allow completion.
+local function createControls()
+    local pg = localPlayer:FindFirstChildOfClass("PlayerGui")
+    if not pg or not Instance or type(Instance.new) ~= "function" then return false end
+    local old = pg:FindFirstChild("ShitaroTrackingControl")
+    if old then old:Destroy() end
+    controlGui = Instance.new("ScreenGui")
+    controlGui.Name = "ShitaroTrackingControl"
+    controlGui.ResetOnSpawn = false
+    controlGui.DisplayOrder = 9999
+    local panel = Instance.new("Frame")
+    panel.Name = "Panel"
+    panel.Size = UDim2.fromOffset(280, 75)
+    panel.Position = UDim2.new(1, -295, 0, 80)
+    panel.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    panel.BackgroundTransparency = 0.12
+    panel.Parent = controlGui
+    progressLabel = Instance.new("TextLabel")
+    progressLabel.Size = UDim2.new(1, -12, 0, 30)
+    progressLabel.Position = UDim2.fromOffset(6, 2)
+    progressLabel.BackgroundTransparency = 1
+    progressLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    progressLabel.TextSize = 14
+    progressLabel.Text = "Сбор данных ESP..."
+    progressLabel.Parent = panel
+    local button = Instance.new("TextButton")
+    button.Name = "Finish"
+    button.Size = UDim2.new(1, -16, 0, 32)
+    button.Position = UDim2.fromOffset(8, 36)
+    button.BackgroundColor3 = Color3.fromRGB(105, 68, 145)
+    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    button.TextSize = 14
+    button.Text = "Завершить и сохранить"
+    button.Parent = panel
+    links[#links+1] = button.MouseButton1Click:Connect(requestStop)
+    controlGui.Parent = pg
+    return true
+end
+local controlsOk, controlsReady = pcall(createControls)
+if not controlsOk or not controlsReady then
+    if controlGui then pcall(function() controlGui:Destroy() end); controlGui = nil end
+    progressLabel = nil
+    print("[Shitaro tracking] No button. To stop: getgenv().ShitaroFinishTracking()")
+end
+local function updateProgress()
+    if progressLabel then
+        local seconds = math.max(0, math.ceil((SAMPLES-1)*INTERVAL - (os.clock()-started)))
+        pcall(function() progressLabel.Text = "Сбор ESP: примерно " .. seconds .. " сек." end)
+    end
+end
+
+print("[Shitaro tracking] Started for up to 3 minutes; play normally or press Finish and save.")
 local ok, err = xpcall(function()
-    log("SHITAROHUB BLOCK STRIKE TRACKING DIAGNOSTIC v1")
+    log("SHITAROHUB BLOCK STRIKE TRACKING DIAGNOSTIC v2")
     log("UTC=" .. os.date("!%Y-%m-%d %H:%M:%S") .. " placeId=" .. tostring(game.PlaceId) .. " gameId=" .. tostring(game.GameId) .. " jobId=" .. tostring(game.JobId))
     log("Passive RemoteSnapshot listener. Report contains names, IDs, server ID, positions and bounded RAW packet bytes as hex; raw bytes may contain sensitive session data. No automatic upload.")
     log("The first argument of each event is inspected; only buffer packets with observed header 06 00/01 are counted after mapping. Entity id byte matches are HEURISTIC, not proof of a position update. Zero hits are not conclusive if a player was never mapped, events were missed, or the format changed.")
@@ -209,13 +270,19 @@ local ok, err = xpcall(function()
         else log("RemoteSnapshot listener failed: " .. clean(link)) end
     else log("RemoteSnapshot unavailable or not an event") end
     for i=1,SAMPLES do
+        if stopRequested then break end
         local sampleOk, sampleErr = pcall(snapshot, i)
         if not sampleOk then log("SAMPLE ERROR: " .. clean(sampleErr)) end
-        if i == 1 or i % 10 == 0 or i == SAMPLES then print("[Shitaro tracking] sample " .. i .. "/" .. SAMPLES) end
+        updateProgress()
+        if i == 1 or i % 30 == 0 or i == SAMPLES then print("[Shitaro tracking] sample " .. i .. "/" .. SAMPLES) end
         if i < SAMPLES then task.wait(INTERVAL) end
     end
 end, function(e) return tostring(e) end)
 for _, link in ipairs(links) do pcall(function() link:Disconnect() end) end
+if controlGui then pcall(function() controlGui:Destroy() end) end
+if env.ShitaroFinishTracking == requestStop then env.ShitaroFinishTracking = nil end
+local endReason = not ok and "error" or (stopRequested and "user_stopped" or "time_limit")
+log("COLLECTION end=" .. endReason)
 if not ok then log("FATAL ERROR: " .. clean(err)) end
 log("\nSUMMARY received=" .. received .. " processedBuffers=" .. processed .. " acceptedPackets=" .. accepted .. " errors=" .. bad)
 for player, s in pairs(states) do

@@ -365,8 +365,8 @@ assert(report == clipboard and disconnected)
 assert(report:find("MAPPED",1,true) and report:find("name=Enemy userId=9876543211 entity_hex=e625",1,true))
 assert(report:find("MATCH",1,true) and report:find("phase=World entity_hex=e625",1,true))
 assert(report:find("phase=Hidden entity_hex=e625",1,true))
-assert(report:find("SUMMARY received=59 processedBuffers=59 acceptedPackets=59 errors=0",1,true))
-assert(report:find("hitsHidden=57/57",1,true))
+assert(report:find("SUMMARY received=180 processedBuffers=180 acceptedPackets=180 errors=0",1,true))
+assert(report:find("hitsHidden=178/178",1,true))
 assert(report:find("HEURISTIC",1,true))
 local foundTrack=false
 for path,data in pairs(files) do
@@ -405,3 +405,57 @@ report=env.ShitaroBlockStrikeTrackingReport
 assert(report:find("RESET",1,true) and report:find("name=Enemy reason=character_or_generation_changed",1,true))
 assert(report:match("RESULT name=Enemy userId=9876543211 mapped=no"))
 nativePrint("PASS: tracking forgets entity IDs when a player respawns")
+
+-- Full-state packets can identify players already present before the probe.
+-- Stopping via the fallback callback must finalize and disconnect immediately.
+remote.ClassName="RemoteEvent"
+target.Character=enemy;enemy.Parent=workspace;enemy.attrs.ClientCharacterPresentationVisible=true
+enemy.attrs.CharacterGeneration=30;enemyRoot.Position=vec(10,2,0)
+local fullSpawn=packBuffer(string.char(6,0)..string.rep("\0",27)..encodeVarint(target.UserId)..entity..string.char(9)..string.pack("<fff",10,2,0)..string.rep("\0",6))
+tickCount=0
+function task.wait()
+    tickCount=tickCount+1
+    if tickCount==1 then listener(fullSpawn) else assert(env.ShitaroFinishTracking)() end
+end
+writefile=function(path,data) files[path]=data end
+setclipboard=function(data) clipboard=data end
+clipboard,disconnected=nil,false
+dofile("diagnostics/block_strike_tracking.lua")
+report=env.ShitaroBlockStrikeTrackingReport
+assert(disconnected and clipboard==report)
+assert(report:find("name=Enemy userId=9876543211 entity_hex=e625",1,true))
+assert(report:find("COLLECTION end=user_stopped",1,true))
+assert(report:find("SUMMARY received=1 processedBuffers=1 acceptedPackets=1 errors=0",1,true))
+assert(env.ShitaroFinishTracking==nil)
+nativePrint("PASS: full-state mapping and early-stop callback")
+
+-- Mock the GUI so the on-screen button and cleanup are exercised as well.
+local madeGui, clickCallback, clickDisconnected
+Instance={new=function(class)
+    local item={ClassName=class}
+    if class=="ScreenGui" then
+        madeGui=item
+        function item:Destroy() self.destroyed=true end
+    elseif class=="TextButton" then
+        item.MouseButton1Click={Connect=function(_,fn)
+            clickCallback=fn
+            return {Disconnect=function() clickDisconnected=true end}
+        end}
+    end
+    return item
+end}
+UDim2={fromOffset=function(x,y) return {x=x,y=y} end,new=function(...) return {...} end}
+Color3={fromRGB=function(...) return {...} end}
+tickCount=0
+function task.wait()
+    tickCount=tickCount+1
+    if tickCount==1 then listener(fullSpawn) else assert(clickCallback)() end
+end
+clipboard,disconnected=nil,false
+dofile("diagnostics/block_strike_tracking.lua")
+report=env.ShitaroBlockStrikeTrackingReport
+assert(report:find("COLLECTION end=user_stopped",1,true))
+assert(disconnected and clickDisconnected and madeGui.destroyed and clipboard==report)
+assert(env.ShitaroFinishTracking==nil)
+Instance=nil
+nativePrint("PASS: in-game stop button, report and cleanup")
