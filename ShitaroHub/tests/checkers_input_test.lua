@@ -22,8 +22,9 @@ end}}
 local pg={}
 function pg:FindFirstChild(n) if n=="ModeSelectGui" then return screen end end
 function pg:GetGuiObjectsAtPosition() return overlays end
+local shouldHide=true
 local vim={};function vim:SendMouseButtonEvent(x,y,button,down)
-    assert(gui.Enabled==false,"hub must be hidden during pointer injection")
+    assert(gui.Enabled~=shouldHide,"hub hidden only for vote input, visible for world input")
     clicks[#clicks+1]={x=x,y=y,down=down}
 end
 local services={VirtualInputManager=vim}
@@ -33,8 +34,8 @@ local env=setmetatable({adapter=adapter,playerGui=pg,gui=gui,controller={running
     game={GetService=function(_,name) return assert(services[name]) end},log=function() end,
     getconnections=function() return {{Enabled=true,Fire=function() connections=connections+1 end}} end,
 }, {__index=_G})
-local build=assert(load(votes.."\nreturn pointerClick", "input", "t", env))
-local pointer=build()
+local build=assert(load(votes.."\nreturn pointerClick,function() cursor3dUnsafe=false end", "input", "t", env))
+local pointer,resetCursor=build()
 local oldSize=b.AbsoluteSize;b.AbsoluteSize={X=0,Y=0}
 assert(adapter.vote("American",1)==nil and #clicks==0 and connections==0,"unlaid button must wait without input")
 b.AbsoluteSize=oldSize
@@ -87,9 +88,10 @@ assert(adapter.vote("American",1) and connections==1)
 assert(gui.Enabled==true)
 -- Mouse retry moves, waits a frame, clicks, waits, and restores the cursor.
 local mouseMoves,mouseClicks={},0
-env.mousemoveabs=function(x,y) mouseMoves[#mouseMoves+1]={x,y} end
+local mousePosition={X=25,Y=30}
+env.mousemoveabs=function(x,y) mouseMoves[#mouseMoves+1]={x,y};mousePosition={X=x,Y=y} end
 env.mouse1click=function() mouseClicks=mouseClicks+1 end
-function env.UserInputService:GetMouseLocation() return {X=25,Y=30} end
+function env.UserInputService:GetMouseLocation() return mousePosition end
 local frameBeforeMouse=frames
 assert(pointer(200,150,"mouse",b) and frames==frameBeforeMouse+3 and mouseClicks==1)
 assert(#mouseMoves==2 and mouseMoves[2][1]==25 and mouseMoves[2][2]==30 and gui.Enabled)
@@ -100,10 +102,11 @@ assert(not pointer(200,150,"mouse",b,function() return still end))
 waitHook=nil;assert(mouseClicks==1 and #mouseMoves==4 and mouseMoves[4][1]==25 and gui.Enabled)
 -- For 3D input, compare the engine's actual Mouse.Target after moving.
 local actualTarget,plannedPart={},{}
+shouldHide=false
 env.player={GetMouse=function() return {Target=actualTarget} end}
 services.VirtualInputManager=vim;overlays={}
 local moves={}
-function vim:SendMouseMoveEvent(x,y) moves[#moves+1]={x,y} end
+function vim:SendMouseMoveEvent(x,y) moves[#moves+1]={x,y};mousePosition={X=x,Y=y} end
 local beforeVirtual=#clicks
 assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart),"wrong engine target must not receive virtual click")
 assert(#clicks==beforeVirtual and #moves==2 and moves[2][1]==25 and gui.Enabled,"wrong target restores cursor and hub")
@@ -111,8 +114,15 @@ actualTarget=nil
 assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart),"nil engine target must not receive click")
 assert(#clicks==beforeVirtual)
 actualTarget=plannedPart
+waitHook=function() assert(gui.Enabled,"world retry must never hide the HUD during a frame") end
 assert(pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart),"matching target may receive virtual click")
+waitHook=nil
 assert(#clicks==beforeVirtual+2 and clicks[#clicks-1].down and not clicks[#clicks].down,"virtual pointer press and release")
+-- A visible active HUD control still blocks a 3D press instead of being hidden.
+overlays={blocker};local beforeOverlay=#clicks
+assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart))
+assert(#clicks==beforeOverlay and gui.Enabled,"active HUD remains visible and protects its controls")
+overlays={}
 local beforeMouseClicks=mouseClicks
 actualTarget={}
 assert(not pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart))
@@ -138,6 +148,25 @@ waitHook=function() if frames==heldMouseFrame+3 then env.controller.running=fals
 assert(pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart))
 waitHook=nil;assert(pressCount==1 and releaseCount==1 and gui.Enabled and not env.controller.running)
 env.controller.running=true;env.mouse1press=nil;env.mouse1release=nil
+-- A bad executor coordinate mapping never presses, restores to an unreliable
+-- position, retries by VIM, or hides the HUD. Reset only on a new session.
+local previousMove=env.mousemoveabs;local mismatchMoves=0
+mousePosition={X=25,Y=30};actualTarget=plannedPart
+local beforeMismatch=mouseClicks
+local checkLog={};env.log=function(k,m) checkLog[#checkLog+1]=k..":"..m end
+env.mousemoveabs=function() mismatchMoves=mismatchMoves+1;mousePosition={X=799,Y=599} end
+assert(not pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart))
+assert(mismatchMoves==1 and mouseClicks==beforeMismatch and gui.Enabled,"mismatch skips click and unsafe restore")
+assert(table.concat(checkLog,"\n"):find("cursor position mismatch",1,true))
+local movesAfterMismatch=#moves
+assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart))
+assert(#moves==movesAfterMismatch and gui.Enabled,"mismatch disables later cursor moves this session")
+resetCursor();env.mousemoveabs=previousMove;mousePosition={X=25,Y=30}
+-- Invalid cursor origin is not restored or clicked.
+mousePosition={X=1e30,Y=1e30};local oldMoveCount=#mouseMoves
+assert(not pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart))
+assert(#mouseMoves==oldMoveCount and mouseClicks==beforeMismatch)
+resetCursor();mousePosition={X=25,Y=30}
 -- Exercise the real alternate-detector selection logic separately.
 local alternate=section("function adapter.retryDetector(id)","function adapter.retryPiece(id,stillPending,method)")
 local hitDet,rootDet={},{}
@@ -210,6 +239,13 @@ retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint)
     return method~="mouse"
 end
 assert(retryAdapter.retryPiece("Piece2_1") and #methodOrder==2 and methodOrder[1]=="mouse" and methodOrder[2]=="touch")
+methodOrder={}
+retryEnv.pointerClick=function(x,y,method)
+    methodOrder[#methodOrder+1]=method;retryEnv.cursor3dUnsafe=true;return false
+end
+assert(not retryAdapter.retryPiece("Piece2_1") and #methodOrder==1 and methodOrder[1]=="mouse","bad cursor mapping suppresses touch fallback")
+assert(not retryAdapter.retryPiece("Piece2_1",nil,"virtual") and #methodOrder==1,"bad cursor mapping suppresses later virtual movement")
+retryEnv.cursor3dUnsafe=false
 retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint)
     assert(valid());count=count+1;selectedMethod=method;lastGuiPoint=guiPoint;lastX=x;lastY=y;return true
 end
@@ -330,7 +366,7 @@ second=wall;assert(not retryAdapter.retryPiece("Piece2_1"),"other objects behind
 countGui.Enabled=true;second=piece;assert(not retryAdapter.retryPiece("Piece2_1"),"enabled helper cannot be skipped")
 world.Raycast=oldRay
 -- Touch starts and ends even if Stop happens in the middle; GUI testing uses inset coordinates.
-services.VirtualInputManager=vim;overlays={}
+services.VirtualInputManager=vim;overlays={};shouldHide=true
 local touchCalls={};local checkedX,checkedY
 function pg:GetGuiObjectsAtPosition(x,y) checkedX,checkedY=x,y;return overlays end
 function vim:SendTouchEvent(id,state,x,y) touchCalls[#touchCalls+1]={id,state,x,y} end

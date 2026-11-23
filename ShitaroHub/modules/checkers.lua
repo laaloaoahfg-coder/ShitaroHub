@@ -259,6 +259,7 @@ local function observedMouseTarget(expectedPart,method,allowedBarrier)
     return false
 end
 local inputBusy=false
+local cursor3dUnsafe=false
 local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart,allowedBarrier)
     if inputBusy or not controller or not controller.running then return false end
     local camera=Workspace.CurrentCamera
@@ -267,6 +268,27 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
     if not size or x<0 or y<0 or x>=size.X or y>=size.Y then log("INPUT_GUARD","outside viewport");return false end
     inputBusy=true
     local oldEnabled=gui.Enabled
+    -- The HUD and Stop button stay visible for world input. GUI targets like
+    -- voting still temporarily hide the hub to expose the underlying button.
+    local hideHub=targetPart==nil
+    local function cursorPosition()
+        local ok,pos=pcall(function() return UserInputService:GetMouseLocation() end)
+        if not ok or not pos or type(pos.X)~="number" or type(pos.Y)~="number"
+            or pos.X~=pos.X or pos.Y~=pos.Y or pos.X<0 or pos.Y<0 or pos.X>=size.X or pos.Y>=size.Y then return nil end
+        return pos
+    end
+    local function cursorAtTarget()
+        local pos=cursorPosition()
+        if pos then
+            log("CURSOR_CHECK",string.format("requested=%.1f,%.1f actual=%.1f,%.1f viewport=%.0f,%.0f",x,y,pos.X,pos.Y,size.X,size.Y))
+        else log("CURSOR_CHECK","actual position unavailable or outside viewport") end
+        if not pos or math.abs(pos.X-x)>8 or math.abs(pos.Y-y)>8 then
+            cursor3dUnsafe=true
+            log("INPUT_GUARD","cursor position mismatch; no more 3D cursor attempts this session")
+            return false
+        end
+        return true
+    end
     local function ready()
         if not controller.running then log("INPUT_GUARD","bot stopped");return false end
         if stillPending then
@@ -282,7 +304,7 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
         return true
     end
     local ok,result=pcall(function()
-        gui.Enabled=false
+        if hideHub then gui.Enabled=false end
         RunService.RenderStepped:Wait()
         local readyResult=ready()
         if readyResult~=true then return readyResult end
@@ -302,8 +324,13 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
             if type(mousemoveabs)~="function" or (type(mouse1click)~="function" and (type(mouse1press)~="function" or type(mouse1release)~="function")) then
                 log("INPUT","mouse move/click API unavailable");return false
             end
-            local got,old=pcall(function() return UserInputService:GetMouseLocation() end)
+            if targetPart and cursor3dUnsafe then log("INPUT_GUARD","3D cursor disabled for session");return false end
+            local old=cursorPosition()
+            if targetPart and not old then
+                cursor3dUnsafe=true;log("INPUT_GUARD","cursor origin unavailable; no 3D cursor attempt");return false
+            end
             if not pcall(mousemoveabs,math.floor(x),math.floor(y)) then return false end
+            local verified=not targetPart
             -- Give the engine a frame to observe the moved cursor before the
             -- press, then keep it there briefly after the click. Restore even
             -- on error or cancellation.
@@ -311,6 +338,7 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
                 RunService.RenderStepped:Wait()
                 local stillReady=ready()
                 if stillReady~=true then return stillReady end
+                if targetPart then verified=cursorAtTarget();if not verified then return false end end
                 if not observedMouseTarget(targetPart,"mouse",allowedBarrier) then return false end
                 local didClick
                 if type(mouse1press)=="function" and type(mouse1release)=="function" then
@@ -324,14 +352,19 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
                 log("INPUT", "mouse click invoked="..tostring(didClick))
                 return didClick
             end)
-            if got and old then pcall(mousemoveabs,old.X,old.Y) end
+            if old and verified then pcall(mousemoveabs,old.X,old.Y) end
             if not mouseOk then log("INPUT","mouse injection error");return false end
             return clicked
         end
         local got,vim=pcall(function() return game:GetService("VirtualInputManager") end)
         if not got or not vim then return false end
         if method=="vim3d" then
-            local gotOld,old=pcall(function() return UserInputService:GetMouseLocation() end)
+            if targetPart and cursor3dUnsafe then log("INPUT_GUARD","3D cursor disabled for session");return false end
+            local old=cursorPosition()
+            if targetPart and not old then
+                cursor3dUnsafe=true;log("INPUT_GUARD","cursor origin unavailable; no 3D cursor attempt");return false
+            end
+            local verified=not targetPart
             local worked,attempted=pcall(function()
                 local moved=pcall(function() vim:SendMouseMoveEvent(x,y,game) end)
                 log("INPUT","virtual pointer move="..tostring(moved))
@@ -339,6 +372,7 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
                 RunService.RenderStepped:Wait()
                 local stillReady=ready()
                 if stillReady~=true then return stillReady end
+                if targetPart then verified=cursorAtTarget();if not verified then return false end end
                 if not observedMouseTarget(targetPart,"virtual",allowedBarrier) then return false end
                 local down=pcall(function() vim:SendMouseButtonEvent(x,y,0,true,game,0) end)
                 if down then pcall(function() RunService.RenderStepped:Wait() end) end
@@ -346,7 +380,7 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
                 log("INPUT","virtual 3D click down="..tostring(down).." up="..tostring(up))
                 return down
             end)
-            if gotOld and old then pcall(function() vim:SendMouseMoveEvent(old.X,old.Y,game) end) end
+            if old and verified then pcall(function() vim:SendMouseMoveEvent(old.X,old.Y,game) end) end
             if not worked then log("INPUT","virtual pointer error");return false end
             return attempted
         end
@@ -357,7 +391,7 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart
         log("INPUT", "virtual click down="..tostring(down).." up="..tostring(up))
         return down
     end)
-    pcall(function() gui.Enabled=oldEnabled end)
+    if hideHub then pcall(function() gui.Enabled=oldEnabled end) end
     inputBusy=false
     if not ok then log("INPUT","click raised an error");return false end
     return result
@@ -695,6 +729,7 @@ local function retryVisible(part,stillCurrent,stillPending,method)
     end
     local x,y=point.viewport.X,point.viewport.Y
     log("RETRY_COORDS",string.format("viewport=%.1f,%.1f gui=%.1f,%.1f touch=%s",x,y,point.gui.X,point.gui.Y,tostring(UserInputService.TouchEnabled)))
+    if cursor3dUnsafe then log("RETRY_GUARD","cursor coordinates unsafe");return false end
     if method=="virtual" then
         return pointerClick(x,y,"vim3d",nil,valid,point.gui,part,allowedBarrier)
     end
@@ -702,6 +737,7 @@ local function retryVisible(part,stillCurrent,stillPending,method)
     -- back to touch if a mouse press was not started, never immediately
     -- duplicate a press that might still be acknowledged by the game.
     if pointerClick(x,y,"mouse",nil,valid,point.gui,part,allowedBarrier) then return true end
+    if cursor3dUnsafe then return false end
     if stillPending and not stillPending() then return false end
     if UserInputService.TouchEnabled then
         if pointerClick(x,y,"touch",nil,valid,point.gui,part,allowedBarrier) then return true end
@@ -810,7 +846,7 @@ end
 connect(startButton.Activated,function()
     if controller.running then return end
     hud.Visible=true
-    logger=createLog(os.clock);lastStatus=nil;lastDetectorState=nil
+    logger=createLog(os.clock);lastStatus=nil;lastDetectorState=nil;cursor3dUnsafe=false
     markersEnabled=true
     if not markers and okMarkers and type(createMarkers)=="function" then
         local ok,result=pcall(createMarkers,make,playerGui)
