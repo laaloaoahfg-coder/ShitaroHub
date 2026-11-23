@@ -4,6 +4,9 @@ return function(engine, adapter)
     local c={running=false,status="Остановлен",stats={wins=0,losses=0,unknown=0,games=0}}
     local s={}
     local function now() return adapter.now() end
+    local function trace(kind, message)
+        if adapter.trace then pcall(adapter.trace,kind,message) end
+    end
     local function status(text) c.status=text;if adapter.changed then adapter.changed(c) end end
     local function clearRound()
         s.match=false;s.mode=nil;c.mode=nil;s.board=nil;s.side=nil;s.turn=false;s.phase=nil;s.plan=nil
@@ -14,10 +17,13 @@ return function(engine, adapter)
         c.running=false;s.phase=nil
         if adapter.cancel then pcall(adapter.cancel) end
         status("Остановлен: "..tostring(reason))
+        trace("HALT",reason)
+        if adapter.onStop then pcall(adapter.onStop,reason) end
     end
     function c.start()
         if c.running then return end
         s={};clearRound();c.running=true;s.nextSeat=0
+        trace("START","ожидание стола")
         status("Поиск стола")
     end
     function c.stop()
@@ -25,6 +31,8 @@ return function(engine, adapter)
         c.running=false;clearRound()
         if adapter.cancel then pcall(adapter.cancel) end
         status("Остановлен")
+        trace("STOP","остановка пользователем")
+        if adapter.onStop then pcall(adapter.onStop,"user_stop") end
     end
     local function findPiece(id)
         if not s.board then return nil end
@@ -47,14 +55,14 @@ return function(engine, adapter)
             if not adapter.isSeated() or not adapter.containsLocal(a) then return end
             s.voteSeat=adapter.seatKey()
             if not s.voteSeat then return end
-            s.voteOpen=true;s.voteAck=false;s.mode=nil;s.voteAttempts=0;s.nextVote=0
+            s.voteOpen=true;s.voteAck=false;s.voteFailed=false;s.mode=nil;s.voteAttempts=0;s.nextVote=0
             status("Голосование")
         elseif action=="Voted" and s.voteOpen and adapter.isLocalId(a) then
-            s.voteAck=true
+            s.voteAck=true;trace("VOTE_ACK",tostring(b))
         elseif action=="Result" and s.voteOpen then
             if adapter.seatKey()~=s.voteSeat then halt("стол изменился во время голосования") return end
             s.voteOpen=false
-            if a=="Classic" or a=="American" then s.mode=a;c.mode=a;status("Правила: "..a)
+            if a=="Classic" or a=="American" then s.mode=a;c.mode=a;trace("RULES",a);status("Правила: "..a)
             else halt("неизвестные правила") end
         elseif action=="Close" then s.voteOpen=false end
     end
@@ -73,8 +81,10 @@ return function(engine, adapter)
             elseif result=="loss" then c.stats.losses=c.stats.losses+1
             else c.stats.unknown=c.stats.unknown+1 end
             if adapter.saveStats then pcall(adapter.saveStats,c.stats) end
+            trace("ROUND_END",result)
             clearRound();s.nextSeat=now()+4
             status("Партия завершена: "..result)
+            if adapter.onRound then pcall(adapter.onRound) end
         elseif action=="TurnChanged" and s.match then
             s.turn=adapter.isLocal(a);s.phase=nil;s.plan=nil;s.deadline=nil
             status(s.turn and "Наш ход" or "Ход соперника")
@@ -106,6 +116,7 @@ return function(engine, adapter)
         elseif action=="PieceSelected" and s.match and s.turn and (s.phase=="select" or s.phase=="cell") then
             local step=s.plan and s.plan.steps[s.stepIndex]
             if a~=s.planId or not step or not findOption(b,step) then halt("запланированный ход не подтверждён сервером") return end
+            trace("SELECT_ACK",tostring(a).." варианты="..tostring(#b))
             s.phase="cell";s.options=b;s.phaseUntil=now()+5
         elseif action=="MustContinueCapture" and s.match and s.turn then
             if s.phase~="continue" or a~=s.planId then halt("неожиданное продолжение взятия") return end
@@ -122,8 +133,13 @@ return function(engine, adapter)
         if not c.running then return end
         if s.voteOpen and not s.voteAck and now()>=(s.nextVote or 0) and s.voteAttempts<3 then
             s.voteAttempts=s.voteAttempts+1;s.nextVote=now()+2
-            local ok=adapter.vote("American")
-            if not ok then status("Не удалось голосовать автоматически — выберите вручную") end
+            local ok=adapter.vote("American",s.voteAttempts)
+            trace("VOTE_ATTEMPT", "номер="..s.voteAttempts.." вызван="..tostring(ok))
+            if not ok then status("Голосую; при необходимости выберите вручную") end
+        elseif s.voteOpen and not s.voteAck and s.voteAttempts>=3 and not s.voteFailed and now()>=(s.nextVote or 0) then
+            s.voteFailed=true
+            trace("VOTE_TIMEOUT","подтверждение голоса не получено")
+            status("Не удалось голосовать автоматически — выберите вручную")
         end
         if not s.match then
             if not s.voteOpen and now()>=(s.nextSeat or 0) then
@@ -142,29 +158,47 @@ return function(engine, adapter)
             local board,side=adapter.initialBoard()
             if board and (side==1 or side==2) then
                 s.board=board;s.side=side;s.initializing=false
+                trace("BOARD_READY","side="..side.." mode="..tostring(s.mode))
                 status(s.turn and "Наш ход" or "Ход соперника")
             elseif now()>s.initUntil then halt("не удалось надёжно прочитать начальную доску") end
             return
         end
         if not s.turn or not s.board then return end
-        if s.phase and now()>(s.phaseUntil or 0) then halt("нет подтверждения от игры") return end
+        if s.phase and now()>(s.phaseUntil or 0) then
+            local labels={selectReady="шашка недоступна для нажатия",select="нет подтверждения выбора шашки",
+                cell="клетка недоступна для нажатия",move="нет подтверждения хода",
+                continue="нет подтверждения продолжения взятия",turn="не передан следующий ход"}
+            halt(labels[s.phase] or "нет подтверждения от игры") return
+        end
+        if s.phase=="select" and not s.selectRetried and s.retryAt and now()>=s.retryAt then
+            s.selectRetried=true
+            if adapter.retryPiece then
+                trace("SELECT_RETRY","физический клик по "..tostring(s.planId))
+                local attempted=adapter.retryPiece(s.planId)
+                trace("SELECT_RETRY_RESULT",tostring(attempted))
+            else trace("SELECT_RETRY","физический клик недоступен") end
+        end
         if not s.phase then
             local move=engine.best(s.board,s.side,s.mode,{depth=4,nodes=5000})
             if not move then halt("нет допустимого хода") return end
             local p=s.board[move.r][move.c]
             if not p or not p.id then halt("не найдена выбранная шашка") return end
-            s.plan=move;s.planId=p.id;s.stepIndex=1;s.phase="selectReady";s.phaseUntil=now()+5
+            s.plan=move;s.planId=p.id;s.stepIndex=1;s.phase="selectReady";s.phaseUntil=now()+5;s.selectRetried=false
+            local step=move.steps[1]
+            trace("PLAN",tostring(p.id).." from="..move.r..","..move.c.." to="..step.r..","..step.c.." steps="..#move.steps.." capture="..tostring(step.cr~=nil))
         elseif s.phase=="selectReady" then
             s.phase="select"
             local result=adapter.selectPiece(s.planId)
+            if result~=nil then trace("SELECT_ATTEMPT",tostring(s.planId).." result="..tostring(result)) end
             if result==nil and s.phase=="select" then s.phase="selectReady"
             elseif result==false then halt("не удалось выбрать шашку")
-            elseif result==true and s.phase=="select" then s.phaseUntil=now()+5 end
+            elseif result==true and s.phase=="select" then s.phaseUntil=now()+5;s.retryAt=now()+2 end
         elseif s.phase=="cell" then
             local step=s.plan.steps[s.stepIndex]
             local waitUntil=s.phaseUntil
             s.phase="move"
             local result=adapter.clickCell(step.r,step.c)
+            if result~=nil then trace("CELL_ATTEMPT",step.r..","..step.c.." result="..tostring(result)) end
             if result==nil and s.phase=="move" then s.phase="cell";s.phaseUntil=waitUntil
             elseif result==false then halt("не удалось нажать клетку")
             elseif result==true and s.phase=="move" then s.phaseUntil=now()+5 end

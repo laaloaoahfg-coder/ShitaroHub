@@ -69,12 +69,15 @@ new("ImageButton","ClassicButton",panel,{Visible=true})
 local activeGui=new("ScreenGui","ShitaroMenuOnly",pg)
 local page=new("Frame","checkers",activeGui)
 local players={LocalPlayer=localPlayer}
-local services={Workspace=world,ReplicatedStorage=rep,HttpService={}}
+local services={Workspace=world,ReplicatedStorage=rep,HttpService={},UserInputService={}}
 game={PlaceId=75526590957446};function game:GetService(n) return assert(services[n]) end
 local clicks,voteCalls={},0
 function fireclickdetector(d) clicks[#clicks+1]=d end
 function getconnections() return {{Enabled=true,Fire=function() voteCalls=voteCalls+1 end}} end
 isfile=nil;readfile=nil;writefile=nil
+local logEnv,clipboard={},nil
+function getgenv() return logEnv end
+function setclipboard(value) clipboard=value end
 local co;task={}
 function task.spawn(f) co=coroutine.create(f);assert(coroutine.resume(co)) end
 function task.wait() coroutine.yield() end
@@ -118,6 +121,9 @@ step();assert(#clicks==2,"must click a server-confirmed destination")
 local pos=clicks[2].Parent.Position
 remote.OnClientEvent:Fire("PieceMoved",selected,pos.Z,pos.X,nil,false)
 remote.OnClientEvent:Fire("GameOver",localPlayer,true)
+assert(clipboard and clipboard==logEnv.ShitaroCheckersBotLog,"game end must copy the log")
+assert(clipboard:find("GAME GameOver winner=local",1,true) and clipboard:find("SELECT_ATTEMPT",1,true),"log includes actions and game events")
+assert(not clipboard:find("Me",1,true) and not clipboard:find("UserId=42",1,true),"log must not expose player identifiers")
 statsButton.Activated:Fire()
 assert(stats.Visible and stats:FindFirstChild("Stats").Text:find("Побед: 1",1,true),"stats screen win")
 stop.Activated:Fire();step();assert(#clicks==2,"no more actions after stop")

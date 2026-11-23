@@ -44,4 +44,19 @@ c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("G
 c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}})
 for i=1,6 do time=time+1;c.tick() end
 assert(not c.running,"unavailable cell detector must time out")
+-- A single delayed retry is allowed, but never a tile before confirmation.
+local retries=0;local attempts={}
+a.vote=function(_,attempt) attempts[#attempts+1]=attempt;return true end
+a.retryPiece=function(id) assert(id=="own");retries=retries+1;return true end
+a.clickCell=function() cells=cells+1;return true end
+c.start();c.vote("Start",{hasLocal=true});c.tick();time=time+2;c.tick();time=time+2;c.tick()
+assert(#attempts==3 and attempts[1]==1 and attempts[2]==2 and attempts[3]==3,"vote tries methods in order")
+c.vote("Voted",42,"American");time=time+3;c.tick();assert(#attempts==3,"confirmed vote stops retries")
+c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
+local beforeRetryCells=cells;time=time+2;c.tick();c.tick();assert(retries==1 and cells==beforeRetryCells,"only one retry, no blind cell")
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick();assert(cells==beforeRetryCells+1)
+c.stop()
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});time=time+3;c.tick()
+assert(retries==1,"acknowledgement suppresses selection retry");c.stop()
 io.write("PASS: checkers controller votes, server legal checks, multi-jump, stop, stats and timeout\n")

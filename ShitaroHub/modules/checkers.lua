@@ -3,11 +3,13 @@ return function(ctx)
 if game.PlaceId ~= 75526590957446 or not ctx.tabs[7] then return end
 local Players, Workspace = ctx.Players, game:GetService("Workspace")
 local ReplicatedStorage, HttpService = game:GetService("ReplicatedStorage"), game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
 local player, playerGui, gui = ctx.player, ctx.playerGui, ctx.gui
 local make, connect, corner = ctx.make, ctx.connect, ctx.corner
 local okEngine, engine = pcall(ctx.Loader.module, "core/checkers_engine.lua")
 local okController, createController = pcall(ctx.Loader.module, "core/checkers_controller.lua")
-if not okEngine or not okController then error("checkers modules unavailable") end
+local okLog, createLog = pcall(ctx.Loader.module, "core/checkers_log.lua")
+if not okEngine or not okController or not okLog then error("checkers modules unavailable") end
 
 local page = ctx.tabs[7].page
 local function text(parent,name,textValue,y,height)
@@ -30,12 +32,44 @@ local clockLabel=text(main,"Time","",100,28)
 local startButton=button(main,"Start","Start",16,140,100)
 local stopButton=button(main,"Stop","Stop",126,140,100)
 local statsButton=button(main,"Statistics","Статистика",236,140,128)
-text(main,"Help","Запустите до посадки. Бот ожидает итог голосования и подтверждение ходов игры. При ошибке он останавливается.",190,76)
+local copyButton=button(main,"CopyLog","Копировать лог",16,183,160)
+local logLabel=text(main,"LogStatus","Лог сохраняется при остановке или окончании партии",220,32)
+text(main,"Help","Запустите до посадки. Бот ожидает итог голосования и подтверждение ходов игры. При ошибке он останавливается.",255,65)
 text(statPage,"Heading","Статистика игр бота",10,24)
 local statsLabel=text(statPage,"Stats","",50,120)
 local backButton=button(statPage,"Back","Назад",16,190,100)
 
 local model, cells, moving, lastSeatAttempt = nil, nil, false, -math.huge
+local logger, lastStatus, controller
+local env=(getgenv and getgenv()) or _G
+local function log(kind,message)
+    if logger then pcall(logger.add,kind,message) end
+end
+local function saveLog(reason)
+    if not logger then logLabel.Text="Лог появится после Start";return false end
+    log("SAVE",reason)
+    local report=logger.report()
+    env.ShitaroCheckersBotLog=report
+    local fileOk=false
+    if type(writefile)=="function" then
+        fileOk=pcall(function()
+            if type(makefolder)=="function" then
+                for _,dir in ipairs({"ShitaroHub","ShitaroHub/diagnostics"}) do
+                    if type(isfolder)~="function" or not isfolder(dir) then
+                        local ok,err=pcall(makefolder,dir)
+                        if not ok and (type(isfolder)~="function" or not isfolder(dir)) then error(err) end
+                    end
+                end
+            end
+            writefile("ShitaroHub/diagnostics/checkers_bot_log.txt",report)
+        end)
+    end
+    local copy=type(setclipboard)=="function" and setclipboard or (type(toclipboard)=="function" and toclipboard or nil)
+    local copyOk=false;if copy then copyOk=pcall(copy,report) end
+    logLabel.Text=copyOk and "Лог скопирован в буфер" or (fileOk and "Буфер недоступен; лог сохранён в файл" or "Лог доступен в getgenv().ShitaroCheckersBotLog")
+    if not copyOk and not fileOk then warn("[checkers] clipboard and file unavailable; log in getgenv().ShitaroCheckersBotLog") end
+    return copyOk or fileOk
+end
 local statsPath="ShitaroHub/checkers_stats_"..tostring(player.UserId)..".json"
 local persistence=false
 local function loadStats()
@@ -54,6 +88,9 @@ end
 local savedStats=loadStats()
 local adapter={}
 adapter.now=os.clock
+adapter.trace=log
+adapter.onStop=function(reason) saveLog("stop="..tostring(reason)) end
+adapter.onRound=function() saveLog("game_over") end
 local function humanoid()
     return player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 end
@@ -127,17 +164,16 @@ function adapter.saveStats(stats)
     end)
     if not ok then persistence=false end
 end
--- No direct remote calls: invoke available local GUI event connections and
--- wait for the server's Voted/Result messages. Unsupported executors can vote manually.
-function adapter.vote(mode)
-    if type(getconnections)~="function" then return false end
-    local screen=playerGui:FindFirstChild("ModeSelectGui")
-    local panel=screen and screen:FindFirstChild("Panel")
-    local b=panel and panel:FindFirstChild(mode=="American" and "AmericanButton" or "ClassicButton")
-    if not b or not b:IsA("GuiButton") or not b.Visible or not screen.Enabled then return false end
+-- A real pointer click is attempted only at a visible vote button, or at a
+-- piece verified by raycast. The hub is hidden during injection so it does not
+-- intercept the click. Nothing is sent via a guessed RemoteEvent protocol.
+local function safeSignalVote(b)
+    if type(getconnections)~="function" then log("VOTE_METHOD","getconnections unavailable");return false end
     for _,name in ipairs({"MouseButton1Click","Activated"}) do
         local ok,list=pcall(function() return getconnections(b[name]) end)
-        if ok and type(list)=="table" and #list>0 then
+        local count=ok and type(list)=="table" and #list or 0
+        log("VOTE_CONNECTIONS",name.." count="..count)
+        if count>0 then
             local fired=false
             for _,link in ipairs(list) do
                 local done=pcall(function()
@@ -145,10 +181,96 @@ function adapter.vote(mode)
                     if type(link.Fire)=="function" then link:Fire();fired=true
                     elseif type(link.Function)=="function" then link.Function();fired=true end
                 end)
-                if not done then return false end
+                if not done then log("VOTE_CONNECTIONS","handler failed");return false end
             end
             if fired then return true end
         end
+    end
+    return false
+end
+local function safeDescendant(obj,ancestor)
+    local ok,result=pcall(function() return obj:IsDescendantOf(ancestor) end)
+    return ok and result==true
+end
+local function guiHitSafe(x,y,expected)
+    local ok,objects=pcall(function() return playerGui:GetGuiObjectsAtPosition(x,y) end)
+    if not ok or type(objects)~="table" then
+        -- Never send a physical click through unexamined UI.
+        log("INPUT_GUARD","GUI hit test unavailable");return false
+    end
+    local found=false
+    for _,obj in ipairs(objects) do
+        local within=expected and (obj==expected or safeDescendant(obj,expected))
+        if within then found=true end
+        if obj.Visible and obj.Active and not within then
+            log("INPUT_GUARD","active UI covers target");return false
+        end
+        if found then break end
+    end
+    if expected and not found then log("INPUT_GUARD","button not at intended point");return false end
+    return true
+end
+local function pointerClick(x,y,method,expected)
+    if not controller or not controller.running then return false end
+    local camera=Workspace.CurrentCamera
+    if not camera or type(x)~="number" or type(y)~="number" then return false end
+    local size=camera.ViewportSize
+    if not size or x<0 or y<0 or x>=size.X or y>=size.Y then log("INPUT_GUARD","outside viewport");return false end
+    local oldEnabled=gui.Enabled
+    local ok,result=pcall(function()
+        gui.Enabled=false
+        if not guiHitSafe(x,y,expected) then return false end
+        if method=="mouse" then
+            if type(mousemoveabs)~="function" or (type(mouse1click)~="function" and (type(mouse1press)~="function" or type(mouse1release)~="function")) then return false end
+            local got,old=pcall(function() return UserInputService:GetMouseLocation() end)
+            local moved=pcall(mousemoveabs,math.floor(x),math.floor(y))
+            if not moved then return false end
+            local clicked
+            if type(mouse1click)=="function" then clicked=pcall(mouse1click)
+            else
+                local down=pcall(mouse1press);local up=pcall(mouse1release)
+                clicked=down and up
+            end
+            if got and old then pcall(mousemoveabs,old.X,old.Y) end
+            log("INPUT", "mouse click invoked="..tostring(clicked))
+            return clicked
+        end
+        local got,vim=pcall(function() return game:GetService("VirtualInputManager") end)
+        if not got or not vim then return false end
+        local down=pcall(function() vim:SendMouseButtonEvent(x,y,0,true,game,0) end)
+        local up=pcall(function() vim:SendMouseButtonEvent(x,y,0,false,game,0) end)
+        log("INPUT", "virtual click down="..tostring(down).." up="..tostring(up))
+        return down and up
+    end)
+    gui.Enabled=oldEnabled
+    if not ok then log("INPUT","click raised an error");return false end
+    return result==true
+end
+local function clickVoteButton(b,method)
+    local ok,x,y=pcall(function()
+        local pos,size=b.AbsolutePosition,b.AbsoluteSize
+        if size.X<=1 or size.Y<=1 then error("empty button") end
+        return pos.X+size.X/2,pos.Y+size.Y/2
+    end)
+    if not ok then log("VOTE_METHOD","button bounds unavailable");return false end
+    return pointerClick(x,y,method,b)
+end
+function adapter.vote(mode,attempt)
+    if not controller or not controller.running then return false end
+    local screen=playerGui:FindFirstChild("ModeSelectGui")
+    local panel=screen and screen:FindFirstChild("Panel")
+    local b=panel and panel:FindFirstChild(mode=="American" and "AmericanButton" or "ClassicButton")
+    if not b or not b:IsA("GuiButton") or not b.Visible or not screen.Enabled then
+        log("VOTE_BUTTON","not ready");return false
+    end
+    -- Different attempts use different mechanisms; an attempted click is not
+    -- considered a confirmed vote until the server emits the local Voted event.
+    local methods=attempt==1 and {"vim","mouse","connections"}
+        or (attempt==2 and {"mouse","connections","vim"} or {"connections","vim","mouse"})
+    for _,method in ipairs(methods) do
+        local fired=method=="connections" and safeSignalVote(b) or (method~="connections" and clickVoteButton(b,method))
+        log("VOTE_METHOD",method.." attempted="..tostring(fired))
+        if fired then return true end
     end
     return false
 end
@@ -203,33 +325,63 @@ function adapter.initialBoard()
     model=root;cells=tileGrid;moving=false
     return board,side
 end
-local function clickDetector(detector)
-    if not detector or not detector.Parent then return nil end
-    if type(fireclickdetector)~="function" then return false end
+local lastDetectorState
+local function detectorLog(value)
+    if lastDetectorState~=value then lastDetectorState=value;log("DETECTOR",value) end
+end
+local function clickDetector(detector,kind)
+    if not detector or not detector.Parent then detectorLog(kind.." missing");return nil end
+    if type(fireclickdetector)~="function" then detectorLog(kind.." API unavailable");return false end
     local max=detector.MaxActivationDistance
-    if type(max)~="number" or max<=0 then return nil end
+    if type(max)~="number" or max<=0 then detectorLog(kind.." inactive max="..tostring(max));return nil end
     local hum=humanoid();local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
     local part=detector.Parent
-    if not hum or not root or not part:IsA("BasePart") then return false end
-    if (part.Position-root.Position).Magnitude>max then return nil end
+    if not hum or not root or not part:IsA("BasePart") then detectorLog(kind.." bad parent or character");return false end
+    local distance=(part.Position-root.Position).Magnitude
+    if distance>max then detectorLog(kind.." out of range");return nil end
+    detectorLog(string.format("%s active distance=%.2f max=%.2f",kind,distance,max))
     local ok=pcall(fireclickdetector,detector)
     return ok
 end
-function adapter.selectPiece(id)
-    if not model or not adapter.isSeated() then return false end
+local function pieceFor(id)
+    if not model or not adapter.isSeated() then return nil end
     local folder=model:FindFirstChild("Pieces");local part=folder and folder:FindFirstChild(id)
-    if not part or not part:IsA("BasePart") then return false end
+    if part and part:IsA("BasePart") then return part end
+end
+function adapter.selectPiece(id)
+    local part=pieceFor(id)
+    if not part then return false end
     local hitbox=part:FindFirstChild("ClickHitbox")
     local detector=hitbox and hitbox:FindFirstChildOfClass("ClickDetector") or part:FindFirstChildOfClass("ClickDetector")
-    return clickDetector(detector)
+    return clickDetector(detector,"piece "..id)
+end
+function adapter.retryPiece(id)
+    local part=pieceFor(id);local camera=Workspace.CurrentCamera
+    if not part or not camera then log("RETRY_GUARD","piece or camera missing");return false end
+    local ok,x,y=pcall(function()
+        local screen,onScreen=camera:WorldToScreenPoint(part.Position)
+        if not onScreen or screen.Z<=0 then error("piece not on screen") end
+        local params=RaycastParams.new()
+        params.FilterType=Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances={player.Character,camera}
+        local origin=camera.CFrame.Position
+        local hit=Workspace:Raycast(origin,(part.Position-origin)*1.02,params)
+        if not hit or not hit.Instance or (hit.Instance~=part and not safeDescendant(hit.Instance,part)) then error("piece occluded") end
+        return screen.X,screen.Y
+    end)
+    if not ok then log("RETRY_GUARD","piece is not verified visible or raycast unavailable");return false end
+    -- Only one physical retry is made, and only while the same selection is
+    -- still awaiting confirmation. Never retry a destination click blindly.
+    if pointerClick(x,y,"vim",nil) then return true end
+    return pointerClick(x,y,"mouse",nil)
 end
 function adapter.clickCell(row,col)
     if not model or not cells or not adapter.isSeated() then return false end
     local part=cells[row] and cells[row][col]
     if not part or not part.Parent or part.Name~="Move" then return false end
-    return clickDetector(part:FindFirstChildOfClass("ClickDetector"))
+    return clickDetector(part:FindFirstChildOfClass("ClickDetector"),"cell "..row..","..col)
 end
-local controller=createController(engine,adapter)
+controller=createController(engine,adapter)
 if savedStats then for _,k in ipairs({"games","wins","losses","unknown"}) do controller.stats[k]=savedStats[k] end end
 local function refresh()
     stateLabel.Text=controller.status
@@ -238,24 +390,91 @@ local function refresh()
     local s=controller.stats
     statsLabel.Text="Игр: "..s.games.."\nПобед: "..s.wins.."\nПоражений: "..s.losses.."\nНеизвестный результат: "..s.unknown.."\n"..(persistence and "Статистика сохраняется локально" or "Только текущая сессия")
 end
-adapter.changed=refresh
+adapter.changed=function(c)
+    if lastStatus~=c.status then lastStatus=c.status;log("STATUS",c.status) end
+    refresh()
+end
 local gameLink,voteLink
+local function pieceName(value)
+    if type(value)=="string" and value:match("^Piece[12]_%d+$") then return value end
+    return value==nil and "none" or "unknown"
+end
+local function optionsText(list)
+    if type(list)~="table" then return "unavailable" end
+    local out={}
+    for i=1,math.min(#list,16) do
+        local v=list[i]
+        if type(v)=="table" and type(v.row)=="number" and type(v.col)=="number" then
+            out[#out+1]=tostring(v.row)..","..tostring(v.col)..":"..(v.isCapture==true and "capture" or "move")
+        end
+    end
+    return table.concat(out,";")
+end
+local function recordGame(action,a,b,d,e,f)
+    if not controller.running then return end
+    if action=="GameStarted" then log("GAME","GameStarted")
+    elseif action=="TurnChanged" then log("GAME","TurnChanged player="..(a==player and "local" or "other"))
+    elseif action=="YourTurn" then log("GAME","YourTurn seconds="..(type(a)=="number" and tostring(a) or "unknown"))
+    elseif action=="OpponentTurn" then log("GAME","OpponentTurn")
+    elseif action=="PieceSelected" or action=="MustContinueCapture" then
+        log("GAME",action.." piece="..pieceName(a).." options="..optionsText(b))
+    elseif action=="PieceMoved" then
+        local row=type(b)=="number" and tostring(b) or "?"
+        local col=type(d)=="number" and tostring(d) or "?"
+        log("GAME","PieceMoved piece="..pieceName(a).." to="..row..","..col.." captured="..pieceName(e).." kingFlag="..(type(f)=="boolean" and tostring(f) or "?"))
+    elseif action=="KingPromoted" then log("GAME","KingPromoted piece="..pieceName(a))
+    elseif action=="GameOver" then log("GAME","GameOver winner="..(a==player and "local" or (a==nil and "unknown" or "other")))
+    else log("GAME","other event") end
+end
+local function recordVote(action,a,b)
+    if not controller.running then return end
+    if action=="Start" then log("GAME","VoteStart local="..tostring(adapter.containsLocal(a)))
+    elseif action=="Voted" then
+        local mode=(b=="American" or b=="Classic") and b or "unknown"
+        log("GAME","Voted voter="..(adapter.isLocalId(a) and "local" or "other").." mode="..mode)
+    elseif action=="Result" then
+        log("GAME","VoteResult mode="..((a=="American" or a=="Classic") and a or "unknown"))
+    elseif action=="Close" then log("GAME","VoteClose")
+    else log("GAME","other vote event") end
+end
 local function ensureListeners()
     if gameLink and voteLink then return true end
     local event=ReplicatedStorage:FindFirstChild("GameEvent")
     local vote=ReplicatedStorage:FindFirstChild("ModeVoteEvent")
     if not event or not vote or not event:IsA("RemoteEvent") or not vote:IsA("RemoteEvent") then return false end
-    gameLink=event.OnClientEvent:Connect(function(...) local ok,err=pcall(controller.event,...);if not ok then controller.stop();warn("[checkers] event error: "..tostring(err)) end end)
-    voteLink=vote.OnClientEvent:Connect(function(...) local ok,err=pcall(controller.vote,...);if not ok then controller.stop();warn("[checkers] vote error: "..tostring(err)) end end)
+    gameLink=event.OnClientEvent:Connect(function(...)
+        local logged=pcall(recordGame,...);if not logged then log("ERROR","game log failed") end
+        local ok,err=pcall(controller.event,...)
+        if not ok then log("ERROR","game event handler failed");controller.stop();warn("[checkers] event error: "..tostring(err)) end
+    end)
+    voteLink=vote.OnClientEvent:Connect(function(...)
+        local logged=pcall(recordVote,...);if not logged then log("ERROR","vote log failed") end
+        local ok,err=pcall(controller.vote,...)
+        if not ok then log("ERROR","vote event handler failed");controller.stop();warn("[checkers] vote error: "..tostring(err)) end
+    end)
     return true
 end
 connect(startButton.Activated,function()
     if controller.running then return end
-    if type(fireclickdetector)~="function" then stateLabel.Text="Нет fireclickdetector — бот не запущен";return end
-    if not ensureListeners() then stateLabel.Text="Игровые события не найдены — бот не запущен";return end
+    logger=createLog(os.clock);lastStatus=nil;lastDetectorState=nil
+    log("SESSION","placeId="..tostring(game.PlaceId).." session started")
+    log("CAPABILITIES","fireclickdetector="..tostring(type(fireclickdetector)=="function")
+        .." getconnections="..tostring(type(getconnections)=="function")
+        .." mousemoveabs="..tostring(type(mousemoveabs)=="function")
+        .." mouse1click="..tostring(type(mouse1click)=="function"))
+    if type(fireclickdetector)~="function" then
+        stateLabel.Text="Нет fireclickdetector — бот не запущен";log("ERROR","fireclickdetector unavailable");saveLog("start_failed");return
+    end
+    if not ensureListeners() then
+        stateLabel.Text="Игровые события не найдены — бот не запущен";log("ERROR","game events unavailable");saveLog("start_failed");return
+    end
     controller.start()
 end)
-connect(stopButton.Activated,function() controller.stop();refresh() end)
+connect(stopButton.Activated,function()
+    if controller.running then controller.stop() else saveLog("manual_stop") end
+    refresh()
+end)
+connect(copyButton.Activated,function() saveLog("manual_copy") end)
 connect(statsButton.Activated,function() main.Visible=false;statPage.Visible=true;refresh() end)
 connect(backButton.Activated,function() statPage.Visible=false;main.Visible=true end)
 refresh()
@@ -265,7 +484,7 @@ task.spawn(function()
         if not gui.Parent then break end
         if controller.running then
             local ok,err=pcall(controller.tick)
-            if not ok then controller.stop();stateLabel.Text="Ошибка; бот остановлен";warn("[checkers] "..tostring(err)) end
+            if not ok then log("ERROR","bot tick failed");controller.stop();stateLabel.Text="Ошибка; бот остановлен";warn("[checkers] "..tostring(err)) end
             refresh()
         end
     end

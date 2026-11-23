@@ -1,0 +1,8 @@
+local make=assert(loadfile("core/checkers_log.lua"))()
+local t=0;local l=make(function() return t end,2)
+l.add("start","one\ntwo");t=1;l.add("event","second");t=2;l.add("stop","third")
+local r=l.report()
+assert(r:find("dropped_oldest=1",1,true) and not r:find("one two",1,true))
+assert(r:find("event second",1,true) and r:find("stop third",1,true))
+assert(r:find("END OF LOG",1,true))
+io.write("PASS: bounded checkers session log preserves recent events\n")
