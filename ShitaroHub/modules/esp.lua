@@ -83,6 +83,7 @@ xpcall(function()
         palette = {},
         ignoreTeam = false,
         ignoreFriends = false,
+        lastSeen = false,     -- opt-in, uncertain positions only
         range = 500,
     }
 
@@ -1072,6 +1073,85 @@ xpcall(function()
     local entries = {}
     local botEntries = {}
 
+    -- A missing helper must not take down ordinary ESP. This optional marker
+    -- only remembers positions observed in the live Workspace, for 10 seconds.
+    local tracker
+    if ctx.Loader then
+        local ok, helper = pcall(ctx.Loader.module, "core/esp_last_seen.lua")
+        if ok and type(helper) == "table" and type(helper.new) == "function" then
+            local made, result = pcall(helper.new, 10)
+            if made then tracker = result end
+        end
+    end
+    if not tracker then
+        warn("[shitaro/esp] last-seen helper unavailable; standard ESP still works")
+    end
+    local lastSeenLabels = {}
+
+    local function hideLastSeen(target)
+        local label = lastSeenLabels[target]
+        if label then label.Visible = false end
+    end
+
+    local function clearLastSeen(target)
+        if tracker then tracker.forget(target) end
+        hideLastSeen(target)
+    end
+
+    local function characterGeneration(target, char)
+        local generation = target:GetAttribute("CharacterGeneration")
+        if generation == nil and char then
+            generation = char:GetAttribute("CharacterGeneration")
+        end
+        return generation
+    end
+
+    local function canKeepLastSeen(target, char)
+        if target.Parent ~= Players or not char or flagged(target) or flagged(char) then
+            return false
+        end
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        return not humanoid or (humanoid.Health > 0
+            and humanoid:GetState() ~= Enum.HumanoidStateType.Dead
+            and not flagged(humanoid))
+    end
+
+    local function showLastSeen(target, char, cam, origin, now)
+        if not cfg.lastSeen or not tracker or not canKeepLastSeen(target, char) then
+            clearLastSeen(target)
+            return
+        end
+        local position, age = tracker.get(target, char, characterGeneration(target, char), now)
+        if not position or (position - origin).Magnitude * STUDS_TO_M > cfg.range then
+            hideLastSeen(target)
+            return
+        end
+        local point, onScreen = cam:WorldToViewportPoint(position)
+        if not onScreen or point.Z <= 0 then
+            hideLastSeen(target)
+            return
+        end
+        local label = lastSeenLabels[target]
+        if not label then
+            label = make("TextLabel", {
+                Name = "LastSeen_" .. tostring(target.UserId),
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Size = UDim2.fromOffset(260, 20),
+                TextSize = 13,
+                TextColor3 = Color3.fromRGB(255, 196, 70),
+                TextStrokeColor3 = BLACK,
+                TextStrokeTransparency = 0.25,
+                TextXAlignment = Enum.TextXAlignment.Center,
+                TextYAlignment = Enum.TextYAlignment.Center,
+                Visible = false,
+            }, overlay)
+            lastSeenLabels[target] = label
+        end
+        label.Position = UDim2.fromOffset(floor(point.X), floor(point.Y))
+        label.Text = target.Name .. "  ? " .. tostring(floor(age)) .. "s"
+        label.Visible = true
+    end
+
     local HEALTH_COLORS = ColorSequence.new({
         ColorSequenceKeypoint.new(0.00, Color3.fromRGB(64, 230, 96)),
         ColorSequenceKeypoint.new(0.20, Color3.fromRGB(64, 230, 96)),
@@ -1741,22 +1821,27 @@ xpcall(function()
         local entry = entries[target]
         local char = target.Character
 
+        if (cfg.ignoreTeam and isTeammate(target))
+            or (cfg.ignoreFriends and friendCache[target.UserId]) then
+            clearLastSeen(target)
+            return hideEntry(entry)
+        end
+
         if not isAlive(target) then
-            return hideEntry(entry)
+            hideEntry(entry)
+            showLastSeen(target, char, cam, origin, now)
+            return
         end
 
+        hideLastSeen(target)
         local humanoid = char:FindFirstChildOfClass("Humanoid")
-
-        if humanoid and humanoid.Health <= 0 then
-            return hideEntry(entry)
-        end
-
-        if cfg.ignoreTeam and isTeammate(target) then
-            return hideEntry(entry)
-        end
-
-        if cfg.ignoreFriends and friendCache[target.UserId] then
-            return hideEntry(entry)
+        if cfg.lastSeen and tracker then
+            local root = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+            if root and root:IsA("BasePart") and root:IsDescendantOf(char) then
+                tracker.remember(target, char, characterGeneration(target, char), root.Position, now)
+            else
+                clearLastSeen(target)
+            end
         end
 
         entry = entry or createEntry(target)
@@ -1768,6 +1853,7 @@ xpcall(function()
     end
 
     local function anyPlayerEnabled()
+        if cfg.lastSeen and tracker then return true end
         for _, key in ipairs(FEATURES) do
             if cfg.enabled[key] then
                 return true
@@ -1947,6 +2033,7 @@ xpcall(function()
             for _, entry in pairs(botEntries) do
                 hideEntry(entry)
             end
+            for target in pairs(lastSeenLabels) do hideLastSeen(target) end
 
             return
         end
@@ -1954,6 +2041,7 @@ xpcall(function()
         local cam = Workspace.CurrentCamera
 
         if not cam then
+            for target in pairs(lastSeenLabels) do hideLastSeen(target) end
             return
         end
 
@@ -2197,6 +2285,11 @@ xpcall(function()
         end
 
         friendCache[target.UserId] = nil
+        clearLastSeen(target)
+        if lastSeenLabels[target] then
+            lastSeenLabels[target]:Destroy()
+            lastSeenLabels[target] = nil
+        end
         lastKnown[target] = nil
         streamBusy[target] = nil
     end)
@@ -2236,7 +2329,7 @@ xpcall(function()
     local visualsScroll = pageScroll(tabs[3].page, "VisualsScroll")
     panelWidths[visualsScroll] = window.Size.X.Offset - PANEL_RESERVE
 
-    local espCard = previewPanel(visualsScroll, "esp.panel", 1, #FEATURES + 1)
+    local espCard = previewPanel(visualsScroll, "esp.panel", 1, #FEATURES + 2)
 
     local filterCard, filterHolder =
         previewPanel(visualsScroll, "esp.filters", 2, 3)
@@ -2461,6 +2554,18 @@ xpcall(function()
 
     addSwatch(botFrame, "bots", "visible", 70)
     addSwatch(botFrame, "bots", "hidden", 48)
+
+    if tracker then
+        local lastFrame, lastLabel = previewRow(espCard, #FEATURES + 2, "", true)
+        localize(lastLabel, "esp.lastSeen")
+        addToggle(lastFrame, false, function(value)
+            cfg.lastSeen = value
+            if not value then
+                tracker.clear()
+                for target in pairs(lastSeenLabels) do hideLastSeen(target) end
+            end
+        end)
+    end
 
     layoutPreview()
 end, function(err)

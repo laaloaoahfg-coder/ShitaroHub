@@ -48,7 +48,7 @@ def main():
             check(lua.luaL_loadbufferx(state, data, len(data), str(path.relative_to(root)).encode(), b't'), 'Syntax')
             lua.lua_settop(state, 0)
         print(f'PASS: syntax parsed for {len(paths)} Lua files (Lua 5.4, not Luau compiler)', flush=True)
-        for name in ('aim_regression.lua', 'esp_player_regression.lua', 'block_strike_diagnostic_test.lua'):
+        for name in ('aim_regression.lua', 'esp_player_regression.lua', 'esp_last_seen_regression.lua', 'block_strike_diagnostic_test.lua'):
             path = root / 'tests' / name
             data = path.read_bytes()
             chunk_name = ('@tests/' + name).encode()
