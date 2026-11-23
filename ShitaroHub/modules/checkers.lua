@@ -230,7 +230,7 @@ local function guiHitSafe(x,y,expected)
     return true
 end
 local inputBusy=false
-local function pointerClick(x,y,method,expected,stillPending)
+local function pointerClick(x,y,method,expected,stillPending,guiPoint)
     if inputBusy or not controller or not controller.running then return false end
     local camera=Workspace.CurrentCamera
     if not camera or type(x)~="number" or type(y)~="number" then return false end
@@ -247,7 +247,9 @@ local function pointerClick(x,y,method,expected,stillPending)
                 log("INPUT_GUARD","action no longer pending or target changed");return false
             end
         end
-        if not guiHitSafe(x,y,expected) then return false end
+        local gx,gy=x,y
+        if guiPoint then gx,gy=guiPoint.X,guiPoint.Y end
+        if not guiHitSafe(gx,gy,expected) then return false end
         return true
     end
     local ok,result=pcall(function()
@@ -255,6 +257,18 @@ local function pointerClick(x,y,method,expected,stillPending)
         RunService.RenderStepped:Wait()
         local readyResult=ready()
         if readyResult~=true then return readyResult end
+        if method=="touch" then
+            local got,vim=pcall(function() return game:GetService("VirtualInputManager") end)
+            if not got or not vim then log("INPUT","touch service unavailable");return false end
+            local id=912345
+            local down=pcall(function() vim:SendTouchEvent(id,0,x,y) end)
+            if not down then log("INPUT","touch start unavailable");return false end
+            pcall(function() RunService.RenderStepped:Wait() end)
+            -- Always release an injected touch, even after Stop/acknowledgement.
+            local up=pcall(function() vim:SendTouchEvent(id,2,x,y) end)
+            log("INPUT","touch start="..tostring(down).." end="..tostring(up))
+            return true
+        end
         if method=="mouse" then
             if type(mousemoveabs)~="function" or (type(mouse1click)~="function" and (type(mouse1press)~="function" or type(mouse1release)~="function")) then return false end
             local got,old=pcall(function() return UserInputService:GetMouseLocation() end)
@@ -432,13 +446,19 @@ function adapter.retryDetector(id)
     log("ALT_DETECTOR","root result="..tostring(result))
     return result
 end
-function adapter.retryPiece(id,stillPending)
-    local part=pieceFor(id);local camera=Workspace.CurrentCamera
-    if not part or not camera then log("RETRY_GUARD","piece or camera missing");return false end
+-- WorldToViewportPoint matches physical mouse/touch screen coordinates;
+-- WorldToScreenPoint accounts for GUI inset and is used ONLY for GUI hit test.
+local function retryVisible(part,stillCurrent,stillPending)
+    local camera=Workspace.CurrentCamera
+    if not part or not camera then log("RETRY_GUARD","target or camera missing");return false end
     local function projected()
-        local ok,screen,onScreen=pcall(function() return camera:WorldToScreenPoint(part.Position) end)
-        if not ok or not screen then return nil,"projection_failed" end
-        if not onScreen or screen.Z<=0 then return nil,"offscreen" end
+        local ok,point,onScreen,guiPoint=pcall(function()
+            local viewport,visible=camera:WorldToViewportPoint(part.Position)
+            local screen=camera:WorldToScreenPoint(part.Position)
+            return viewport,visible,screen
+        end)
+        if not ok or not point or not guiPoint then return nil,"projection_failed" end
+        if not onScreen or point.Z<=0 then return nil,"offscreen" end
         local hitOk,hit=pcall(function()
             local params=RaycastParams.new()
             params.FilterType=Enum.RaycastFilterType.Exclude
@@ -456,20 +476,40 @@ function adapter.retryPiece(id,stillPending)
             log("RETRY_HIT",kind)
             return nil,"raycast_other_object"
         end
-        return screen
+        return {viewport=point,gui=guiPoint}
     end
     local point,reason=projected()
     if not point then log("RETRY_GUARD",reason);return false end
     local function valid()
         if stillPending and not stillPending() then return false end
-        if Workspace.CurrentCamera~=camera or pieceFor(id)~=part then return false end
+        if Workspace.CurrentCamera~=camera or not stillCurrent() then return false end
         local current,why=projected()
         if not current then log("RETRY_GUARD",why);return false end
-        return math.abs(current.X-point.X)<2 and math.abs(current.Y-point.Y)<2
+        return math.abs(current.viewport.X-point.viewport.X)<2 and math.abs(current.viewport.Y-point.viewport.Y)<2
+            and math.abs(current.gui.X-point.gui.X)<2 and math.abs(current.gui.Y-point.gui.Y)<2
     end
-    if pointerClick(point.X,point.Y,"mouse",nil,valid) then return true end
+    local x,y=point.viewport.X,point.viewport.Y
+    log("RETRY_COORDS",string.format("viewport=%.1f,%.1f gui=%.1f,%.1f touch=%s",x,y,point.gui.X,point.gui.Y,tostring(UserInputService.TouchEnabled)))
+    if UserInputService.TouchEnabled then
+        if pointerClick(x,y,"touch",nil,valid,point.gui) then return true end
+        if stillPending and not stillPending() then return false end
+    end
+    if pointerClick(x,y,"mouse",nil,valid,point.gui) then return true end
     if stillPending and not stillPending() then return false end
-    return pointerClick(point.X,point.Y,"vim",nil,valid)
+    return pointerClick(x,y,"vim",nil,valid,point.gui)
+end
+function adapter.retryPiece(id,stillPending)
+    local part=pieceFor(id)
+    return retryVisible(part,function() return pieceFor(id)==part end,stillPending)
+end
+function adapter.retryCell(row,col,stillPending)
+    local part=cells and cells[row] and cells[row][col]
+    if not part or not part.Parent or part.Name~="Move" or not adapter.isSeated() then
+        log("RETRY_GUARD","confirmed cell unavailable");return false
+    end
+    return retryVisible(part,function()
+        return adapter.isSeated() and cells and cells[row] and cells[row][col]==part and part.Parent and part.Name=="Move"
+    end,stillPending)
 end
 function adapter.clickCell(row,col)
     if not model or not cells or not adapter.isSeated() then return false end
@@ -564,7 +604,8 @@ connect(startButton.Activated,function()
     log("CAPABILITIES","fireclickdetector="..tostring(type(fireclickdetector)=="function")
         .." getconnections="..tostring(type(getconnections)=="function")
         .." mousemoveabs="..tostring(type(mousemoveabs)=="function")
-        .." mouse1click="..tostring(type(mouse1click)=="function"))
+        .." mouse1click="..tostring(type(mouse1click)=="function")
+        .." touchEnabled="..tostring(UserInputService.TouchEnabled))
     if type(fireclickdetector)~="function" then
         stateLabel.Text="Нет fireclickdetector — бот не запущен";hudStatus.Text=stateLabel.Text;log("ERROR","fireclickdetector unavailable");saveLog("start_failed");return
     end

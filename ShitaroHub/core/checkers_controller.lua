@@ -230,6 +230,21 @@ return function(engine, adapter)
                 else trace("SELECT_RETRY","физический клик недоступен") end
             end
         end
+        if s.phase=="move" and not s.moveRetried and s.moveRetryAt and now()>=s.moveRetryAt then
+            s.moveRetried=true
+            local expectedState,expectedPlan,expectedIndex=s,s.plan,s.stepIndex
+            local step=expectedPlan and expectedPlan.steps[expectedIndex]
+            local function moveStillPending()
+                return c.running and s==expectedState and s.turn and s.phase=="move"
+                    and s.plan==expectedPlan and s.stepIndex==expectedIndex
+            end
+            if step and adapter.retryCell then
+                trace("CELL_RETRY",step.r..","..step.c)
+                local attempted=adapter.retryCell(step.r,step.c,moveStillPending)
+                if not c.running or s~=expectedState then return end
+                trace("CELL_RETRY_RESULT",tostring(attempted))
+            end
+        end
         if not s.phase then
             local move=engine.best(s.board,s.side,s.mode,{depth=4,nodes=5000})
             if not move then halt("нет допустимого хода") return end
@@ -253,7 +268,9 @@ return function(engine, adapter)
             if result~=nil then trace("CELL_ATTEMPT",step.r..","..step.c.." result="..tostring(result)) end
             if result==nil and s.phase=="move" then s.phase="cell";s.phaseUntil=waitUntil
             elseif result==false then halt("не удалось нажать клетку")
-            elseif result==true and s.phase=="move" then s.phaseUntil=now()+5 end
+            elseif result==true and s.phase=="move" then
+                s.phaseUntil=now()+7.5;s.moveRetryAt=now()+2;s.moveRetried=false
+            end
         end
     end
     return c

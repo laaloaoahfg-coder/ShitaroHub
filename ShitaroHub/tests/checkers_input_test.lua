@@ -110,7 +110,7 @@ assert(load(alternate,"alternate","t",altEnv))()
 assert(altAdapter.retryDetector("Piece1_1") and altCount==1,"alternate uses the distinct root detector")
 rootDet=hitDet;assert(altAdapter.retryDetector("Piece1_1")==nil and altCount==1,"same detector must not be retried")
 -- Test physical retry guard: visible, raycast-confirmed piece only.
-local retry=section("function adapter.retryPiece(id,stillPending)","function adapter.clickCell(row,col)")
+local retry=section("local function retryVisible(","function adapter.clickCell(row,col)")
 local V={};V.__index=V
 V.__sub=function(a,c) return setmetatable({X=a.X-c.X,Y=a.Y-c.Y,Z=a.Z-c.Z},V) end
 V.__mul=function(a,n) return setmetatable({X=a.X*n,Y=a.Y*n,Z=a.Z*n},V) end
@@ -118,19 +118,52 @@ local function vec(x,y,z) return setmetatable({X=x,Y=y,Z=z},V) end
 local piece={Position=vec(0,0,10)};local wall={}
 local camera={CFrame={Position=vec(0,0,0)}}
 local onScreen=true
-function camera:WorldToScreenPoint() return {X=200,Y=150,Z=10},onScreen end
+function camera:WorldToViewportPoint() return {X=200,Y=150,Z=10},onScreen end
+function camera:WorldToScreenPoint() return {X=200,Y=114,Z=10},onScreen end
 local hit=wall;local count=0;local logs={}
 local world={CurrentCamera=camera};function world:Raycast() return {Instance=hit} end
 local retryAdapter={}
-local retryEnv=setmetatable({adapter=retryAdapter,Workspace=world,player={Character={}},
+local selectedMethod,lastGuiPoint,lastX,lastY
+local retryEnv=setmetatable({adapter=retryAdapter,Workspace=world,player={Character={}},UserInputService={TouchEnabled=true},
     pieceFor=function() return piece end,log=function(kind,message) logs[#logs+1]=kind..":"..message end,
-    safeDescendant=function() return false end,pointerClick=function() count=count+1;return true end,
+    safeDescendant=function() return false end,pointerClick=function(x,y,method,expected,valid,guiPoint)
+        assert(valid(),"target must still be valid");count=count+1;selectedMethod=method;lastGuiPoint=guiPoint;lastX=x;lastY=y;return true
+    end,
     RaycastParams={new=function() return {} end},Enum={RaycastFilterType={Exclude=1}},
 },{__index=_G})
 assert(load(retry,"retry","t",retryEnv))()
 assert(not retryAdapter.retryPiece("Piece2_1") and count==0,"occluded piece must not be clicked")
 assert(logs[#logs]=="RETRY_GUARD:raycast_other_object")
 hit=piece;assert(retryAdapter.retryPiece("Piece2_1") and count==1,"visible piece may get one retry")
+assert(selectedMethod=="touch" and lastX==200 and lastY==150 and lastGuiPoint.Y==114,"viewport input differs from inset-relative GUI hit test")
+-- If touch could not even start, fall back to the mouse; no second method is
+-- attempted after a touch start reported success.
+local methodOrder={}
+retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint)
+    methodOrder[#methodOrder+1]=method;assert(valid())
+    return method~="touch"
+end
+assert(retryAdapter.retryPiece("Piece2_1") and #methodOrder==2 and methodOrder[1]=="touch" and methodOrder[2]=="mouse")
+retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint)
+    assert(valid());count=count+1;selectedMethod=method;lastGuiPoint=guiPoint;lastX=x;lastY=y;return true
+end
 onScreen=false;assert(not retryAdapter.retryPiece("Piece2_1") and count==1,"offscreen piece must not be clicked")
 assert(logs[#logs]=="RETRY_GUARD:offscreen")
+-- Only the server-confirmed, still active destination can be physically retried.
+onScreen=true
+local cell={Position=vec(0,0,10),Parent={},Name="Move"};hit=cell
+retryEnv.cells={[5]={[4]=cell}};retryAdapter.isSeated=function() return true end
+assert(retryAdapter.retryCell(5,4,function() return true end) and count==2,"confirmed cell retry")
+cell.Name="BlockMove";assert(not retryAdapter.retryCell(5,4,function() return true end) and count==2,"inactive cell cannot be retried")
+cell.Name="Move";hit=wall;assert(not retryAdapter.retryCell(5,4,function() return true end) and count==2,"occluded cell cannot be clicked")
+-- Touch starts and ends even if Stop happens in the middle; GUI testing uses inset coordinates.
+services.VirtualInputManager=vim;overlays={}
+local touchCalls={};local checkedX,checkedY
+function pg:GetGuiObjectsAtPosition(x,y) checkedX,checkedY=x,y;return overlays end
+function vim:SendTouchEvent(id,state,x,y) touchCalls[#touchCalls+1]={id,state,x,y} end
+local beforeTouch=frames
+waitHook=function() if frames==beforeTouch+2 then env.controller.running=false end end
+assert(pointer(200,150,"touch",nil,function() return true end,{X=200,Y=114}),"touch should start")
+waitHook=nil;assert(#touchCalls==2 and touchCalls[1][2]==0 and touchCalls[2][2]==2 and checkedX==200 and checkedY==114 and gui.Enabled,"touch release and inset GUI guard")
+env.controller.running=true
 io.write("PASS: vote pointer fallback, UI blocking guards, restoration and piece raycast retry\n")

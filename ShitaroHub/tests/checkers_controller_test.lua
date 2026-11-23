@@ -94,6 +94,29 @@ c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("G
 time=time+2;c.tick();time=time+2;c.tick();c.tick();assert(alt==2 and physical==1,"retry methods must be staged and limited")
 time=time+4;c.tick();assert(not c.running and cells==tilesBefore+1,"no confirmation means halt without extra cell")
 a.retryDetector=nil
+-- Only a server-confirmed destination may receive a physical retry.
+local cellRetries=0
+a.retryCell=function(r,col,pending)
+    assert(r==5 and col==4 and pending(),"retry only the planned confirmed destination")
+    cellRetries=cellRetries+1;return true
+end
+a.retryPiece=function() return true end
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
+time=time+2;c.tick();assert(cellRetries==0,"never retry a destination before selection ack")
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick()
+time=time+2;c.tick();c.tick();assert(cellRetries==1,"retry destination once while awaiting move ack")
+c.event("PieceMoved","own",5,4,"foe1",false);time=time+3;c.tick();assert(cellRetries==1,"ack cancels destination retry")
+c.stop()
+-- A delayed confirmation inside retry cannot produce a second click.
+a.retryCell=function(r,col,pending)
+    assert(pending());cellRetries=cellRetries+1
+    c.event("PieceMoved","own",r,col,"foe1",false)
+    assert(not pending());return true
+end
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick();time=time+2;c.tick();c.tick()
+assert(cellRetries==2 and c.running,"ack inside retry leaves no pending duplicate");c.stop()
+a.retryCell=nil
 -- A vote handler that yields may resume after Stop and a new Start.
 a.vote=function(_,_,pending)
     assert(pending());c.stop();c.start();assert(not pending(),"old pending predicate must not match a new session")
