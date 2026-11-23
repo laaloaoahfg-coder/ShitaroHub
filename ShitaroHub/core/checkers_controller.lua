@@ -271,9 +271,9 @@ return function(engine, adapter)
             if adapter.showGuide then ok,shown=pcall(adapter.showGuide,expectedId) end
             if ok and shown and c.running and s==expectedState and s.phase=="select" and s.planId==expectedId then
                 s.manualAssist=true
-                local untilTime=math.max(s.phaseUntil or now(),now()+10)
-                if s.deadline then untilTime=math.min(untilTime,s.deadline-1) end
-                s.phaseUntil=untilTime
+                -- Give the player the remaining turn, but never extend past
+                -- the server deadline; if it is unknown, cap the wait at 20s.
+                s.phaseUntil=s.deadline and (s.deadline-1) or (now()+20)
                 trace("MANUAL_GUIDE","ожидаю ручной выбор "..tostring(s.planId))
                 status("Нажмите подсвеченную шашку")
             else
@@ -325,9 +325,9 @@ return function(engine, adapter)
                 and (not s.deadline or now()<s.deadline-0.5)
                 and s.plan==expectedPlan and s.stepIndex==expectedIndex then
                 s.cellAssist=true
-                local untilTime=math.max(s.phaseUntil or now(),now()+10)
-                if s.deadline then untilTime=math.min(untilTime,s.deadline-1) end
-                s.phaseUntil=untilTime
+                -- Give the player the remaining turn, but never extend past
+                -- the server deadline; if it is unknown, cap the wait at 20s.
+                s.phaseUntil=s.deadline and (s.deadline-1) or (now()+20)
                 trace("CELL_MANUAL_GUIDE","ожидаю ручное нажатие "..step.r..","..step.c)
                 status("Нажмите подсвеченную клетку")
             else

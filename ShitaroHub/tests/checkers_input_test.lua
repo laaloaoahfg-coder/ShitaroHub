@@ -184,6 +184,8 @@ local retryEnv=setmetatable({adapter=retryAdapter,Workspace=world,player={Charac
     end,
     RaycastParams={new=function() return {} end},Enum={RaycastFilterType={Exclude=1}},
 },{__index=_G})
+local barrierSource=section("local function possibleBoardBarrier(obj)","-- WorldToViewportPoint")
+retryEnv.possibleBoardBarrier=assert(load(barrierSource.."\nreturn possibleBoardBarrier","barrier","t",retryEnv))()
 assert(load(retry,"retry","t",retryEnv))()
 assert(not retryAdapter.retryPiece("Piece2_1") and count==0,"occluded piece must not be clicked")
 assert(logs[#logs]=="RETRY_GUARD:raycast_other_object")
@@ -230,6 +232,60 @@ retryEnv.cells={[5]={[4]=cell}};retryAdapter.isSeated=function() return true end
 assert(retryAdapter.retryCell(5,4,function() return true end) and count==2,"confirmed cell retry")
 cell.Name="BlockMove";assert(not retryAdapter.retryCell(5,4,function() return true end) and count==2,"inactive cell cannot be retried")
 cell.Name="Move";hit=wall;assert(not retryAdapter.retryCell(5,4,function() return true end) and count==2,"occluded cell cannot be clicked")
+-- Only a table-sized, inert enclosure over all board corners is eligible;
+-- a second ray must reach the intended object. The actual world is unmodified.
+local tableModel,boardFolder,piecesFolder={},{},{}
+function tableModel:FindFirstChild(name) return name=="Board" and boardFolder or name=="Pieces" and piecesFolder end
+local grid={}
+for r=1,8 do
+    grid[r]={}
+    for col=1,8 do grid[r][col]={Parent=boardFolder,Position=vec((col-1)*0.57,0,(r-1)*0.57)} end
+end
+local barrier={Parent=tableModel,Transparency=1,CanCollide=false,CanQuery=true,Anchored=true,
+    Shape="block",Size=vec(7,10,14),CFrame={PointToObjectSpace=function(_,v) return vec(v.X-2, v.Y, v.Z-2) end}}
+function barrier:IsA(k) return k=="Part" or k=="BasePart" end
+function barrier:FindFirstChildWhichIsA() return nil end
+retryEnv.Enum.PartType={Block="block"};retryEnv.model=tableModel;retryEnv.cells=grid
+retryEnv.safeDescendant=function(o,ancestor)
+    while o do if o==ancestor then return true end;o=o.Parent end
+    return false
+end
+assert(retryEnv.possibleBoardBarrier(barrier),"geometric barrier may be examined")
+barrier.Size=vec(1,1,1);assert(not retryEnv.possibleBoardBarrier(barrier),"small transparent object is not enclosure");barrier.Size=vec(7,10,14)
+barrier.CanCollide=true;assert(not retryEnv.possibleBoardBarrier(barrier));barrier.CanCollide=false
+barrier.Parent=piecesFolder;piecesFolder.Parent=tableModel
+assert(not retryEnv.possibleBoardBarrier(barrier),"piece hitboxes are never barriers");barrier.Parent=tableModel
+barrier.FindFirstChildWhichIsA=function() return {} end
+assert(not retryEnv.possibleBoardBarrier(barrier),"interactive enclosure is not bypassed")
+barrier.FindFirstChildWhichIsA=function() return nil end
+boardFolder.Parent=tableModel
+local second=piece
+function world:Raycast(origin,direction,params)
+    for _,item in ipairs(params.FilterDescendantsInstances) do if item==barrier then return second and {Instance=second} end end
+    return {Instance=barrier}
+end
+local allowed
+retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint,targetPart,allowedBarrier)
+    assert(valid());allowed=allowedBarrier
+    assert(allowed(barrier) and not allowed(wall),"pointer may accept only verified barrier")
+    count=count+1;return true
+end
+local beforeBarrier=count
+assert(retryAdapter.retryPiece("Piece2_1") and count==beforeBarrier+1,"retry through candidate only when second ray reaches piece")
+second=wall;assert(not retryAdapter.retryPiece("Piece2_1") and count==beforeBarrier+1,"second obstacle blocks input")
+second=nil;assert(not retryAdapter.retryPiece("Piece2_1") and count==beforeBarrier+1,"missing target behind barrier blocks input")
+second=piece
+retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint,targetPart,allowedBarrier)
+    second=wall;assert(not valid(),"new obstacle cancels pending press");return false
+end
+assert(not retryAdapter.retryPiece("Piece2_1"),"recheck immediately before press")
+-- Mouse.Target can only be the barrier already proven by the current ray.
+actualTarget=barrier;local clicksBeforeBarrier=#clicks
+assert(pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart,function(o) return o==barrier end))
+assert(#clicks==clicksBeforeBarrier+2)
+actualTarget=wall
+assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart,function(o) return o==barrier end),"other pointer target must still block")
+world.Raycast=oldRay
 -- Touch starts and ends even if Stop happens in the middle; GUI testing uses inset coordinates.
 services.VirtualInputManager=vim;overlays={}
 local touchCalls={};local checkedX,checkedY

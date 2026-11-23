@@ -202,6 +202,16 @@ c.tick();c.tick();c.tick();c.event("PieceSelected","own",{{row=5,col=4,isCapture
 time=time+2;c.tick();time=time+2;c.tick();assert(c.running)
 time=time+4;c.tick();assert(not c.running,"manual cell assist stops at deadline")
 a.showCellGuide=nil;a.clearGuide=nil;a.retryCell=nil
+-- Selection assistance stays available beyond ten seconds when the turn
+-- deadline permits; the player can still acknowledge and proceed.
+a.showGuide=function(id) assert(id=="own");return true end
+a.clearGuide=function() end
+a.retryPiece=function() return false end
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.event("YourTurn",35)
+c.tick();c.tick();c.tick();time=time+2;c.tick();time=time+2;c.tick()
+time=time+12;c.tick();assert(c.running and c.activity()=="Нажмите подсвеченную шашку","guide can use remaining turn")
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick();assert(c.running,"manual acknowledgment resumes")
+c.stop();a.showGuide=nil;a.clearGuide=nil
 -- A vote handler that yields may resume after Stop and a new Start.
 a.vote=function(_,_,pending)
     assert(pending());c.stop();c.start();assert(not pending(),"old pending predicate must not match a new session")
