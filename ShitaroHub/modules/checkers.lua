@@ -10,6 +10,7 @@ local make, connect, corner = ctx.make, ctx.connect, ctx.corner
 local okEngine, engine = pcall(ctx.Loader.module, "core/checkers_engine.lua")
 local okController, createController = pcall(ctx.Loader.module, "core/checkers_controller.lua")
 local okLog, createLog = pcall(ctx.Loader.module, "core/checkers_log.lua")
+local okMarkers, createMarkers = pcall(ctx.Loader.module, "core/checkers_markers.lua")
 if not okEngine or not okController or not okLog then error("checkers modules unavailable") end
 
 local page = ctx.tabs[7].page
@@ -59,6 +60,7 @@ local hudCopy=button(hud,"CopyLog","Копировать лог",108,122,102);hu
 
 local model, cells, moving, lastSeatAttempt = nil, nil, false, -math.huge
 local logger, lastStatus, controller
+local markers, markersEnabled, markerWarning
 local copyFeedbackUntil=0
 local env=(getgenv and getgenv()) or _G
 local function log(kind,message)
@@ -654,6 +656,12 @@ connect(startButton.Activated,function()
     if controller.running then return end
     hud.Visible=true
     logger=createLog(os.clock);lastStatus=nil;lastDetectorState=nil
+    markersEnabled=true
+    if not markers and okMarkers and type(createMarkers)=="function" then
+        local ok,result=pcall(createMarkers,make,playerGui)
+        if ok then markers=result else log("MARKERS","initialization failed") end
+    end
+    if not markers then log("MARKERS","unavailable") end
     log("SESSION","placeId="..tostring(game.PlaceId).." session started")
     log("CAPABILITIES","fireclickdetector="..tostring(type(fireclickdetector)=="function")
         .." getconnections="..tostring(type(getconnections)=="function")
@@ -692,6 +700,14 @@ task.spawn(function()
     while gui.Parent do
         task.wait(0.2)
         if not gui.Parent then break end
+        if markersEnabled and markers then
+            local root,_,side=seatContext()
+            local ok,result=pcall(markers.update,root,side)
+            if not ok or result==false then
+                if not markerWarning then log("MARKERS",ok and "marker creation failed" or "update failed");markerWarning=true end
+                if not ok then pcall(markers.clear) end
+            elseif result==true then markerWarning=false end
+        end
         if controller.running then
             local ok,err=pcall(controller.tick)
             if not ok then
@@ -702,6 +718,7 @@ task.spawn(function()
         end
     end
     controller.stop()
+    if markers then pcall(markers.destroy) end
     if gameLink then gameLink:Disconnect() end
     if voteLink then voteLink:Disconnect() end
 end)

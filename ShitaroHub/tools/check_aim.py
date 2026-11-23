@@ -48,7 +48,7 @@ def main():
             check(lua.luaL_loadbufferx(state, data, len(data), str(path.relative_to(root)).encode(), b't'), 'Syntax')
             lua.lua_settop(state, 0)
         print(f'PASS: syntax parsed for {len(paths)} Lua files (Lua 5.4, not Luau compiler)', flush=True)
-        for name in ('aim_regression.lua', 'esp_player_regression.lua', 'esp_draw_player_regression.lua', 'block_strike_diagnostic_test.lua', 'checkers_research_test.lua', 'checkers_engine_test.lua', 'checkers_controller_test.lua', 'checkers_module_test.lua', 'checkers_captured_replay_test.lua', 'checkers_american_replay_test.lua', 'checkers_log_test.lua', 'checkers_input_test.lua', 'checkers_ui_hide_test.lua'):
+        for name in ('aim_regression.lua', 'esp_player_regression.lua', 'esp_draw_player_regression.lua', 'block_strike_diagnostic_test.lua', 'checkers_research_test.lua', 'checkers_engine_test.lua', 'checkers_controller_test.lua', 'checkers_module_test.lua', 'checkers_captured_replay_test.lua', 'checkers_american_replay_test.lua', 'checkers_log_test.lua', 'checkers_input_test.lua', 'checkers_ui_hide_test.lua', 'checkers_markers_test.lua'):
             path = root / 'tests' / name
             data = path.read_bytes()
             chunk_name = ('@tests/' + name).encode()

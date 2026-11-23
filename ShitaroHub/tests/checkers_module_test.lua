@@ -22,6 +22,14 @@ function O:FindFirstChild(n) for _,x in ipairs(self.children) do if x.Name==n th
 function O:FindFirstChildOfClass(n) for _,x in ipairs(self.children) do if x:IsA(n) then return x end end end
 function O:GetChildren() return self.children end
 function O:GetAttribute(k) return self.attrs[k] end
+function O:Destroy()
+    self.destroyed=true
+    for _,child in ipairs(self.children) do child.Parent=nil;child.destroyed=true end
+    if self.Parent and self.Parent.children then
+        for i=#self.Parent.children,1,-1 do if self.Parent.children[i]==self then table.remove(self.Parent.children,i) end end
+    end
+    self.Parent=nil
+end
 local function new(class,name,parent,props)
     local x=setmetatable({ClassName=class,Name=name,Parent=parent,children={},attrs={},Activated=signal(),MouseButton1Click=signal()},O)
     for k,val in pairs(props or {}) do x[k]=val end
@@ -32,7 +40,8 @@ function typeof(x) return getmetatable(x)==O and "Instance" or type(x) end
 UDim2={fromOffset=function(...) return {...} end,fromScale=function(...) return {...} end,new=function(...) return {...} end}
 UDim={new=function(...) return {...} end}
 Color3={fromRGB=function(...) return {...} end}
-Enum={TextXAlignment={Center=1},HighlightDepthMode={AlwaysOnTop=1}}
+Enum={TextXAlignment={Center=1},HighlightDepthMode={AlwaysOnTop=1},ApplyStrokeMode={Border=1}}
+Vector2={new=function(...) return {...} end}
 local originalClock,originalInstance=os.clock,Instance
 local mockTime=0;os.clock=function() return mockTime end
 local highlights={}
@@ -113,7 +122,18 @@ assert(hud.Visible and hudStatus.Text:find("fireclickdetector",1,true) and hideC
 fireclickdetector=clickApi
 start.Activated:Fire()
 assert(hud.Visible and not window.Visible and hideCount==1,"valid start hides window but leaves HUD visible")
-assert(hudStatus.Text=="Поиск стола" and hudAction.Text=="Поиск стола")
+step();local markerFolder=assert(pg:FindFirstChild("ShitaroCheckersMarkers"))
+assert(#markerFolder:GetChildren()==24,"all 24 pieces have markers")
+local friendly=assert(pieces:FindFirstChild("Piece2_1"));local enemy=assert(pieces:FindFirstChild("Piece1_1"))
+local friendlyMarker,enemyMarker
+for _,m in ipairs(markerFolder:GetChildren()) do
+    if m.Adornee==friendly then friendlyMarker=m elseif m.Adornee==enemy then enemyMarker=m end
+end
+assert(friendlyMarker and enemyMarker and not friendlyMarker.Active and not enemyMarker.Active,"markers are non-interactive")
+local friendlyOutline=friendlyMarker:FindFirstChild("Ring"):FindFirstChild("Outline")
+local enemyOutline=enemyMarker:FindFirstChild("Ring"):FindFirstChild("Outline")
+assert(friendlyOutline.Color[2]>friendlyOutline.Color[1] and enemyOutline.Color[1]>enemyOutline.Color[2],"own green, opponent red")
+assert(hudStatus.Text=="Ожидание соперника" and hudAction.Text=="Ожидание соперника")
 hudCopy.Activated:Fire();assert(clipboard and clipboard:find("manual_copy",1,true),"HUD copies log")
 votes.OnClientEvent:Fire("Start",{{userId=42}},15)
 step();assert(voteCalls==1,"one local vote")
@@ -149,6 +169,8 @@ statsButton.Activated:Fire()
 assert(stats.Visible and stats:FindFirstChild("Stats").Text:find("Побед: 1",1,true),"stats screen win")
 hudStop.Activated:Fire();step();assert(#clicks==2,"no more actions after HUD stop")
 assert(hud.Visible and hudStatus.Text=="Остановлен" and hudAction.Text=="Бот не действует","HUD persists after stop")
+local markerCount=#markerFolder:GetChildren();step()
+assert(#markerFolder:GetChildren()==markerCount and friendlyMarker.Adornee==friendly,"markers persist on the seated board after Stop")
 -- Real module integration: a failed automatic retry highlights the planned
 -- piece; a manual server-confirmed selection lets the bot click its cell.
 start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
@@ -198,5 +220,6 @@ votes.OnClientEvent:Fire("Result","American",false);remote.OnClientEvent:Fire("G
 remote.OnClientEvent:Fire("TurnChanged",localPlayer,{})
 step();step();local beforeClose=#clicks
 activeGui.Parent=nil;step();assert(#clicks==beforeClose,"closing UI must not execute another action")
+assert(markerFolder.destroyed,"full shutdown destroys marker folder")
 os.clock=originalClock;Instance=originalInstance
 io.write("PASS: actual checkers module, GUI, guided selection, confirmed clicks, stats and stop\n")
