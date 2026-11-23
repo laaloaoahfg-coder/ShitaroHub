@@ -57,8 +57,8 @@ xpcall(function()
     -- Build-independent tuning lives here. These are screen/range limits,
     -- not projectile speeds, offsets, or game-specific hitbox assumptions.
     local LIMITS = {
-        circleMin = 1, circleMax = 1500,
-        rangeMin = 1, rangeMax = 2000,
+        circleMin = 1, circleMax = 500,
+        rangeMin = 1, rangeMax = 800,
         smoothMin = 0, smoothMax = 10,
         sightPasses = 8,
     }
