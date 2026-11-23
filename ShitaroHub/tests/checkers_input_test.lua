@@ -109,6 +109,22 @@ local altEnv=setmetatable({adapter=altAdapter,pieceFor=function() return detPart
 assert(load(alternate,"alternate","t",altEnv))()
 assert(altAdapter.retryDetector("Piece1_1") and altCount==1,"alternate uses the distinct root detector")
 rootDet=hitDet;assert(altAdapter.retryDetector("Piece1_1")==nil and altCount==1,"same detector must not be retried")
+-- The visual guide attaches only to the planned piece and is cleaned up.
+local guideSource=section("local guideHighlight", "function adapter.selectPiece(id)")
+local guideObjects={}
+local guideAdapter={}
+local guidePiece={}
+local guideEnv=setmetatable({adapter=guideAdapter,pieceFor=function() return guidePiece end,
+    Instance={new=function(kind)
+        assert(kind=="Highlight");local mark={}
+        function mark:Destroy() self.destroyed=true end
+        guideObjects[#guideObjects+1]=mark;return mark
+    end},Color3={fromRGB=function(...) return {...} end},
+    Enum={HighlightDepthMode={AlwaysOnTop=1}},log=function() end},{__index=_G})
+assert(load(guideSource,"guide","t",guideEnv))()
+assert(guideAdapter.showGuide("Piece1_2") and guideObjects[1].Parent==guidePiece and guideObjects[1].Adornee==guidePiece)
+guideAdapter.clearGuide();assert(guideObjects[1].destroyed,"guide must be destroyed")
+guideEnv.pieceFor=function() return nil end;assert(not guideAdapter.showGuide("missing"),"do not mark missing piece")
 -- Test physical retry guard: visible, raycast-confirmed piece only.
 local retry=section("local function retryVisible(","function adapter.clickCell(row,col)")
 local V={};V.__index=V
@@ -147,6 +163,25 @@ assert(retryAdapter.retryPiece("Piece2_1") and #methodOrder==2 and methodOrder[1
 retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint)
     assert(valid());count=count+1;selectedMethod=method;lastGuiPoint=guiPoint;lastX=x;lastY=y;return true
 end
+-- When centre is blocked, a different sample is used only if its own ray
+-- actually reaches the intended piece. The obstacle is never ignored.
+local box={Transparency=1,CanQuery=true,CanCollide=false}
+retryEnv.model={FindFirstChild=function(_,name)
+    if name=="Functional" then return {FindFirstChild=function(_,n) if n=="Box" then return box end end} end
+end}
+piece.Size={X=2,Y=1,Z=2}
+piece.CFrame={PointToWorldSpace=function(_,offset) return vec(offset.X,offset.Y,10+offset.Z) end}
+retryEnv.Vector3={new=vec}
+local oldRay=world.Raycast
+function world:Raycast(origin,direction)
+    if direction.X>0.1 then return {Instance=piece} end
+    return {Instance=box}
+end
+local afterCentre=count
+assert(retryAdapter.retryPiece("Piece2_1") and count==afterCentre+1,"safe side sample reaches the piece")
+local joined=table.concat(logs,"\n")
+assert(joined:find("RETRY_HIT:functional_box",1,true) and joined:find("RETRY_SAMPLE:index=3",1,true) and joined:find("canQuery=true canCollide=false",1,true),"obstacle and chosen sample logged")
+world.Raycast=oldRay;piece.Size=nil;piece.CFrame=nil;retryEnv.Vector3=nil;retryEnv.model=nil;count=count-1
 onScreen=false;assert(not retryAdapter.retryPiece("Piece2_1") and count==1,"offscreen piece must not be clicked")
 assert(logs[#logs]=="RETRY_GUARD:offscreen")
 -- Only the server-confirmed, still active destination can be physically retried.

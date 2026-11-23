@@ -32,7 +32,15 @@ function typeof(x) return getmetatable(x)==O and "Instance" or type(x) end
 UDim2={fromOffset=function(...) return {...} end,fromScale=function(...) return {...} end,new=function(...) return {...} end}
 UDim={new=function(...) return {...} end}
 Color3={fromRGB=function(...) return {...} end}
-Enum={TextXAlignment={Center=1}}
+Enum={TextXAlignment={Center=1},HighlightDepthMode={AlwaysOnTop=1}}
+local originalClock,originalInstance=os.clock,Instance
+local mockTime=0;os.clock=function() return mockTime end
+local highlights={}
+Instance={new=function(class)
+    assert(class=="Highlight")
+    local mark={ClassName=class};function mark:Destroy() self.destroyed=true end
+    highlights[#highlights+1]=mark;return mark
+end}
 local world=new("Workspace","Workspace")
 local rep=new("ReplicatedStorage","ReplicatedStorage")
 local remote=new("RemoteEvent","GameEvent",rep);remote.OnClientEvent=signal()
@@ -82,7 +90,7 @@ function setclipboard(value) clipboard=value end
 local co;task={}
 function task.spawn(f) co=coroutine.create(f);assert(coroutine.resume(co)) end
 function task.wait() coroutine.yield() end
-local function step() local ok,err=coroutine.resume(co);assert(ok,err) end
+local function step() mockTime=mockTime+0.25;local ok,err=coroutine.resume(co);assert(ok,err) end
 local loader={}
 function loader.module(path) return assert(loadfile(path))() end
 local hideCount=0
@@ -141,11 +149,31 @@ statsButton.Activated:Fire()
 assert(stats.Visible and stats:FindFirstChild("Stats").Text:find("Побед: 1",1,true),"stats screen win")
 hudStop.Activated:Fire();step();assert(#clicks==2,"no more actions after HUD stop")
 assert(hud.Visible and hudStatus.Text=="Остановлен" and hudAction.Text=="Бот не действует","HUD persists after stop")
+-- Real module integration: a failed automatic retry highlights the planned
+-- piece; a manual server-confirmed selection lets the bot click its cell.
+start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
+votes.OnClientEvent:Fire("Result","Classic",true);remote.OnClientEvent:Fire("GameStarted")
+remote.OnClientEvent:Fire("TurnChanged",localPlayer,{});remote.OnClientEvent:Fire("YourTurn",35)
+step();step();step();local guided=clicks[#clicks].Parent.Parent.Name
+for i=1,10 do step() end
+local mark=assert(highlights[#highlights],"failed automatic selection creates a visual guide")
+assert(mark.Adornee.Name==guided and mark.Parent==mark.Adornee and hudStatus.Text=="Нажмите подсвеченную шашку")
+local guidedOptions={}
+for _,m in ipairs(e.moves(initial,2,"Classic")) do
+    if initial[m.r][m.c].id==guided then
+        local st=m.steps[1];guidedOptions[#guidedOptions+1]={row=st.r,col=st.c,isCapture=st.cr~=nil}
+    end
+end
+local beforeGuidedCell=#clicks
+remote.OnClientEvent:Fire("PieceSelected",guided,guidedOptions)
+assert(mark.destroyed,"manual confirmation clears highlight")
+step();assert(#clicks==beforeGuidedCell+1,"server-confirmed manual piece selection advances to cell")
+hudStop.Activated:Fire()
 -- An unexpected server selection stops safely and leaves its reason on the HUD.
 start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
 votes.OnClientEvent:Fire("Result","American",false);remote.OnClientEvent:Fire("GameStarted")
 remote.OnClientEvent:Fire("TurnChanged",localPlayer,{});step();step();step()
-assert(hudAction.Text=="Жду подтверждения шашки","HUD displays pending selection")
+assert(hudAction.Text=="Шашка найдена; жду ответ игры","HUD displays pending selection")
 remote.OnClientEvent:Fire("PieceSelected","Piece1_999",{{row=1,col=1,isCapture=false}})
 assert(hud.Visible and hudStatus.Text:find("Остановлен",1,true) and hudAction.Text=="Бот не действует","HUD retains halt reason")
 hudCopy.Activated:Fire();assert(hudCopy.Text=="Скопировано" and clipboard:find("HALT",1,true),"HUD copies halt log")
@@ -170,4 +198,5 @@ votes.OnClientEvent:Fire("Result","American",false);remote.OnClientEvent:Fire("G
 remote.OnClientEvent:Fire("TurnChanged",localPlayer,{})
 step();step();local beforeClose=#clicks
 activeGui.Parent=nil;step();assert(#clicks==beforeClose,"closing UI must not execute another action")
-io.write("PASS: actual checkers module, GUI, vote, board mapping, confirmed clicks, stats and stop\n")
+os.clock=originalClock;Instance=originalInstance
+io.write("PASS: actual checkers module, GUI, guided selection, confirmed clicks, stats and stop\n")

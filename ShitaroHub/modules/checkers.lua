@@ -422,6 +422,32 @@ local function pieceFor(id)
     local folder=model:FindFirstChild("Pieces");local part=folder and folder:FindFirstChild(id)
     if part and part:IsA("BasePart") then return part end
 end
+local guideHighlight
+function adapter.clearGuide()
+    if guideHighlight then pcall(function() guideHighlight:Destroy() end);guideHighlight=nil end
+end
+function adapter.showGuide(id)
+    adapter.clearGuide()
+    local part=pieceFor(id)
+    if not part then log("GUIDE","piece unavailable");return false end
+    local highlight
+    local ok=pcall(function()
+        highlight=Instance.new("Highlight")
+        highlight.Name="ShitaroCheckersGuide"
+        highlight.Adornee=part
+        highlight.FillColor=Color3.fromRGB(255,210,48)
+        highlight.OutlineColor=Color3.fromRGB(255,255,255)
+        highlight.FillTransparency=0.38
+        highlight.OutlineTransparency=0
+        highlight.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+        highlight.Parent=part
+    end)
+    if not ok then
+        if highlight then pcall(function() highlight:Destroy() end) end
+        log("GUIDE","highlight unavailable");return false
+    end
+    guideHighlight=highlight;log("GUIDE","highlight created for planned piece");return true
+end
 function adapter.selectPiece(id)
     local part=pieceFor(id)
     if not part then return false end
@@ -451,10 +477,19 @@ end
 local function retryVisible(part,stillCurrent,stillPending)
     local camera=Workspace.CurrentCamera
     if not part or not camera then log("RETRY_GUARD","target or camera missing");return false end
-    local function projected()
+    local offsets={{0,0,0},{0,0.34,0},{0.24,0.25,0},{-0.24,0.25,0},{0,0.25,0.24},{0,0.25,-0.24}}
+    local loggedBlock=false
+    local function projected(index)
+        local offset=offsets[index]
+        local ok,worldPoint=pcall(function()
+            if index==1 then return part.Position end
+            local size=part.Size
+            return part.CFrame:PointToWorldSpace(Vector3.new(offset[1]*size.X,offset[2]*size.Y,offset[3]*size.Z))
+        end)
+        if not ok or not worldPoint then return nil,"sample_unavailable" end
         local ok,point,onScreen,guiPoint=pcall(function()
-            local viewport,visible=camera:WorldToViewportPoint(part.Position)
-            local screen=camera:WorldToScreenPoint(part.Position)
+            local viewport,visible=camera:WorldToViewportPoint(worldPoint)
+            local screen=camera:WorldToScreenPoint(worldPoint)
             return viewport,visible,screen
         end)
         if not ok or not point or not guiPoint then return nil,"projection_failed" end
@@ -464,7 +499,7 @@ local function retryVisible(part,stillCurrent,stillPending)
             params.FilterType=Enum.RaycastFilterType.Exclude
             params.FilterDescendantsInstances={player.Character,camera}
             local origin=camera.CFrame.Position
-            return Workspace:Raycast(origin,(part.Position-origin)*1.02,params)
+            return Workspace:Raycast(origin,(worldPoint-origin)*1.02,params)
         end)
         if not hitOk then return nil,"raycast_error" end
         if not hit or not hit.Instance then return nil,"raycast_no_hit" end
@@ -473,17 +508,36 @@ local function retryVisible(part,stillCurrent,stillPending)
             local pieces=model and model:FindFirstChild("Pieces")
             local kind=(board and safeDescendant(hit.Instance,board) and "board")
                 or (pieces and safeDescendant(hit.Instance,pieces) and "other_piece") or "other"
-            log("RETRY_HIT",kind)
+            if not loggedBlock then
+                loggedBlock=true
+                local functional=model and model:FindFirstChild("Functional")
+                local box=functional and functional:FindFirstChild("Box")
+                local role=hit.Instance==box and "functional_box" or kind
+                local okInfo,transparency,canQuery,canCollide=pcall(function()
+                    return hit.Instance.Transparency,hit.Instance.CanQuery,hit.Instance.CanCollide
+                end)
+                log("RETRY_HIT",role)
+                if okInfo then
+                    local t=type(transparency)=="number" and string.format("%.2f",transparency) or "unknown"
+                    log("RETRY_OBSTACLE","role="..role.." transparency="..t.." canQuery="..tostring(canQuery).." canCollide="..tostring(canCollide))
+                end
+            end
             return nil,"raycast_other_object"
         end
         return {viewport=point,gui=guiPoint}
     end
-    local point,reason=projected()
-    if not point then log("RETRY_GUARD",reason);return false end
+    local point,reason,sample
+    for i=1,#offsets do
+        local candidate,why=projected(i)
+        if candidate then point=candidate;sample=i;break end
+        if why~="sample_unavailable" then reason=why end
+    end
+    if not point then log("RETRY_GUARD",reason or "sample_unavailable");return false end
+    log("RETRY_SAMPLE","index="..sample.." total="..#offsets)
     local function valid()
         if stillPending and not stillPending() then return false end
         if Workspace.CurrentCamera~=camera or not stillCurrent() then return false end
-        local current,why=projected()
+        local current,why=projected(sample)
         if not current then log("RETRY_GUARD",why);return false end
         return math.abs(current.viewport.X-point.viewport.X)<2 and math.abs(current.viewport.Y-point.viewport.Y)<2
             and math.abs(current.gui.X-point.gui.X)<2 and math.abs(current.gui.Y-point.gui.Y)<2

@@ -8,13 +8,18 @@ return function(engine, adapter)
         if adapter.trace then pcall(adapter.trace,kind,message) end
     end
     local function status(text) c.status=text;if adapter.changed then adapter.changed(c) end end
+    local function clearGuide()
+        if adapter.clearGuide then pcall(adapter.clearGuide) end
+        s.manualAssist=false;s.guideAt=nil
+    end
     local function clearRound()
+        clearGuide()
         s.match=false;s.mode=nil;c.mode=nil;s.board=nil;s.side=nil;s.turn=false;s.phase=nil;s.plan=nil
         s.voteOpen=false;s.voteAck=false;s.voteAttempts=0;s.initializing=false;s.lostSeatAt=nil;s.voteSeat=nil
         if adapter.releaseBoard then adapter.releaseBoard() end
     end
     local function halt(reason)
-        c.running=false;s.phase=nil
+        c.running=false;s.phase=nil;clearGuide()
         if adapter.cancel then pcall(adapter.cancel) end
         status("Остановлен: "..tostring(reason))
         trace("HALT",reason)
@@ -87,6 +92,7 @@ return function(engine, adapter)
             status("Партия завершена: "..result)
             if adapter.onRound then pcall(adapter.onRound) end
         elseif action=="TurnChanged" and s.match then
+            clearGuide()
             s.turn=adapter.isLocal(a);s.phase=nil;s.plan=nil;s.deadline=nil
             status(s.turn and "Наш ход" or "Ход соперника")
         elseif action=="YourTurn" and s.match then
@@ -118,6 +124,7 @@ return function(engine, adapter)
             local step=s.plan and s.plan.steps[s.stepIndex]
             if a~=s.planId or not step or not findOption(b,step) then halt("запланированный ход не подтверждён сервером") return end
             trace("SELECT_ACK",tostring(a).." варианты="..tostring(#b))
+            clearGuide();status("Шашка подтверждена")
             s.phase="cell";s.options=b;s.phaseUntil=now()+5
         elseif action=="MustContinueCapture" and s.match and s.turn then
             if s.phase~="continue" or a~=s.planId then halt("неожиданное продолжение взятия") return end
@@ -140,7 +147,8 @@ return function(engine, adapter)
         if s.initializing then return "Читаю доску" end
         if not s.match then return c.status end
         if not s.turn then return "Жду ход соперника" end
-        local labels={selectReady="Выбираю шашку",select="Жду подтверждения шашки",
+        if s.phase=="select" and s.manualAssist then return "Нажмите подсвеченную шашку" end
+        local labels={selectReady="Выбираю шашку",select="Шашка найдена; жду ответ игры",
             cell="Готовлю нажатие клетки",move="Жду подтверждения хода",
             continue="Жду продолжение взятия",turn="Жду смену хода"}
         return labels[s.phase] or "Ищу ход"
@@ -227,7 +235,27 @@ return function(engine, adapter)
                     local attempted=adapter.retryPiece(expectedId,selectionStillPending)
                     if not c.running or s~=expectedState then return end
                     trace("SELECT_RETRY_RESULT",tostring(attempted))
-                else trace("SELECT_RETRY","физический клик недоступен") end
+                    if selectionStillPending() then s.guideAt=now()+(attempted==true and 1.2 or 0) end
+                else
+                    trace("SELECT_RETRY","физический клик недоступен");s.guideAt=now()
+                end
+            end
+        end
+        if s.phase=="select" and s.guideAt and now()>=s.guideAt and not s.manualAssist then
+            s.guideAt=nil
+            local expectedState,expectedId=s,s.planId
+            local ok,shown=false,false
+            if adapter.showGuide then ok,shown=pcall(adapter.showGuide,expectedId) end
+            if ok and shown and c.running and s==expectedState and s.phase=="select" and s.planId==expectedId then
+                s.manualAssist=true
+                local untilTime=math.max(s.phaseUntil or now(),now()+10)
+                if s.deadline then untilTime=math.min(untilTime,s.deadline-1) end
+                s.phaseUntil=untilTime
+                trace("MANUAL_GUIDE","ожидаю ручной выбор "..tostring(s.planId))
+                status("Нажмите подсвеченную шашку")
+            else
+                if ok and shown and adapter.clearGuide then pcall(adapter.clearGuide) end
+                trace("MANUAL_GUIDE","подсветка недоступна или действие отменено")
             end
         end
         if s.phase=="move" and not s.moveRetried and s.moveRetryAt and now()>=s.moveRetryAt then

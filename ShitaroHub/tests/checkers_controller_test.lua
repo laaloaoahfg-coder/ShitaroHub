@@ -117,6 +117,29 @@ c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("G
 c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick();time=time+2;c.tick();c.tick()
 assert(cellRetries==2 and c.running,"ack inside retry leaves no pending duplicate");c.stop()
 a.retryCell=nil
+-- If automation can't select, guide only the planned piece for a bounded time.
+local guides,clears=0,0
+a.showGuide=function(id) assert(id=="own");guides=guides+1;return true end
+a.clearGuide=function() clears=clears+1 end
+a.retryPiece=function() return false end
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.event("YourTurn",35)
+c.tick();c.tick();c.tick();local beforeGuideCells=cells;time=time+2;c.tick()
+assert(guides==1 and c.status=="Нажмите подсвеченную шашку" and cells==beforeGuideCells,"manual guide is shown only after retry fails")
+time=time+6;c.tick();assert(c.running and guides==1 and cells==beforeGuideCells,"bounded guide does not repeat clicks")
+local beforeClear=clears
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});assert(clears>beforeClear and c.status=="Шашка подтверждена")
+c.tick();assert(cells==beforeGuideCells+1,"confirmed manual selection may proceed to the planned destination")
+c.stop()
+-- Wrong manual selection and Stop both remove guides and never guess a cell.
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+2;c.tick()
+beforeClear=clears;local beforeWrong=cells;c.event("PieceSelected","other",{{row=5,col=4,isCapture=true}})
+assert(not c.running and clears>beforeClear and cells==beforeWrong,"wrong selection halts and removes guide")
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+2;c.tick()
+beforeClear=clears;c.stop();assert(clears>beforeClear,"stop clears guide")
+-- The guide cannot extend automation past the server turn deadline.
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.event("YourTurn",6)
+c.tick();c.tick();c.tick();time=time+2;c.tick();time=time+4;c.tick();assert(not c.running,"guide stops at turn deadline")
+a.showGuide=nil;a.clearGuide=nil
 -- A vote handler that yields may resume after Stop and a new Start.
 a.vote=function(_,_,pending)
     assert(pending());c.stop();c.start();assert(not pending(),"old pending predicate must not match a new session")
