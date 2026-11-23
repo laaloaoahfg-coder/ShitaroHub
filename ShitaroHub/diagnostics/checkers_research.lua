@@ -9,13 +9,13 @@ local player = Players.LocalPlayer
 local env = (getgenv and getgenv()) or _G
 local options = type(env.ShitaroCheckersResearchConfig) == "table" and env.ShitaroCheckersResearchConfig or {}
 local CAPTURE_OUT = options.CaptureOutgoing == true -- installs a persistent, inert-when-stopped namecall hook
-local DURATION, INTERVAL = 300, 1
+local DURATION, INTERVAL = 900, 1 -- 15 minutes; stop sooner with the button
 local MAX_REMOTE, MAX_IN_EVENTS, MAX_OUT_EVENTS, MAX_PER_REMOTE = 180, 600, 200, 40
 -- These names were identified in a real capture. Reserve capacity so noisy
 -- unrelated events cannot consume the game/vote log early in a match.
-local MAX_PRIORITY_EVENTS, MAX_PRIORITY_PER_DIRECTION = 1200, 800
+local MAX_PRIORITY_EVENTS, MAX_PRIORITY_PER_DIRECTION = 3000, 2500
 local MAX_SEATS, MAX_PARTS, MAX_GUI, MAX_STATE = 60, 450, 250, 350
-local MAX_LOG_CHARS, MAX_NORMAL_CHARS = 2000000, 1400000
+local MAX_LOG_CHARS, MAX_NORMAL_CHARS = 4000000, 3000000
 local start = os.clock()
 local links, lines, charCount, normalChars = {}, {}, 0, 0
 local dropped, received, captured, failures = 0, 0, 0, 0
@@ -408,7 +408,8 @@ local function finish(report)
 end
 
 local ok,err=xpcall(function()
-    log("SHITAROHUB CHECKERS RESEARCH v2")
+    log("SHITAROHUB CHECKERS RESEARCH v3")
+    log("DURATION seconds="..DURATION.." sampleInterval="..INTERVAL)
     log("UTC="..os.date("!%Y-%m-%d %H:%M:%S").." placeId="..tostring(game.PlaceId).." gameId="..tostring(game.GameId).." jobId="..tostring(game.JobId))
     log("PRIVACY: player names, IDs, server ID, gameplay state and network argument strings are included; review before sharing. Buffers, chat GUI and text input are omitted; secret-key redaction is best effort only. No automatic upload.")
     log("LIMITATIONS: client observations only; server scripts/source and InvokeServer responses unavailable. Remote payloads and instance lists are bounded. No automatic move or vote is made.")
@@ -444,7 +445,7 @@ local ok,err=xpcall(function()
             end
         end)
     end
-    print("[checkers research] Started for up to 5 minutes. Play normally; press Finish to save.")
+    print("[checkers research] Started for up to 15 minutes. Play normally; press Finish to save.")
     local index=0
     repeat
         index=index+1
@@ -454,13 +455,14 @@ local ok,err=xpcall(function()
         if not stopped and os.clock()-start < DURATION then task.wait(INTERVAL) end
     until stopped or os.clock()-start >= DURATION
 end,function(e) return tostring(e) end)
+local stopReason = not ok and "error" or (stopped and "user_stopped" or "time_limit")
 stopped=true
 if hookState and hookState.owner==requestStop then hookState.sink=nil;hookState.owner=nil end
 for _, link in ipairs(links) do pcall(function() link:Disconnect() end) end
 if gui then pcall(function() gui:Destroy() end) end
 if env.ShitaroFinishCheckersResearch==requestStop then env.ShitaroFinishCheckersResearch=nil end
 -- Final summary is appended independently of the capture-size limit.
-lines[#lines+1]="SUMMARY elapsed="..stamp().." status="..(ok and "finished" or "error").." observedEvents="..received.." recordedEvents="..captured.." recordedIn="..capturedIn.." recordedOut="..capturedOut.." recordedPriority="..capturedPriority.." watchedRemotes="..watchedCount.." errors="..failures.." droppedReportLines="..dropped
+lines[#lines+1]="SUMMARY elapsed="..stamp().." status="..stopReason.." observedEvents="..received.." recordedEvents="..captured.." recordedIn="..capturedIn.." recordedOut="..capturedOut.." recordedPriority="..capturedPriority.." watchedRemotes="..watchedCount.." errors="..failures.." droppedReportLines="..dropped
 for remote, counts in pairs(eventCount) do
     lines[#lines+1]="EVENT_TOTAL remote=#"..id(remote)..":"..path(remote).." in="..counts.incoming.." out="..counts.outgoing.." perDirectionLimit="..(isPriorityRemote(remote) and MAX_PRIORITY_PER_DIRECTION or MAX_PER_REMOTE)
 end

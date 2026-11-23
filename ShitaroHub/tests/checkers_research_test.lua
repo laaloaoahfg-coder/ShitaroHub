@@ -98,6 +98,7 @@ local function run(enabled)
     dofile("diagnostics/checkers_research.lua")
     local r=assert(env.ShitaroCheckersResearchReport)
     assert(copied==r and r:find("END OF REPORT",1,true))
+    assert(r:find("DURATION seconds=900",1,true) and r:find("status=user_stopped",1,true))
     assert(r:find("seat=#",1,true) and r:find("group=near_part",1,true))
     assert(r:find("CAPABILITIES hookmetamethod=true",1,true))
     assert(r:find("pos=3.00,0.00,3.00",1,true) and r:find('value="Enemy"',1,true))
@@ -143,6 +144,13 @@ function task.wait() assert(clicked)() end
 copied=nil;dofile("diagnostics/checkers_research.lua")
 assert(madeGui.destroyed and buttonDisconnected and copied==env.ShitaroCheckersResearchReport)
 Instance=nil
+-- A simulated timeout at the new 15-minute deadline must finalize the report.
+local nativeClock=os.clock;local fakeTime=0
+os.clock=function() return fakeTime end
+function task.wait() fakeTime=fakeTime+500 end
+copied=nil;dofile("diagnostics/checkers_research.lua")
+os.clock=nativeClock
+assert(copied and copied:find("status=time_limit",1,true) and copied:find("DURATION seconds=900",1,true))
 -- Missing hook support and all output failures still leave an in-memory report.
 env.ShitaroCheckersResearchHook=nil;hookmetamethod=nil
 writefile=function() error("disk unavailable") end;setclipboard=nil;toclipboard=nil
