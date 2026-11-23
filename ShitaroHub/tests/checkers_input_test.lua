@@ -54,6 +54,11 @@ local pending=true
 waitHook=function() pending=false end
 assert(not adapter.vote("American",1,function() return pending end),"ack during hide cancels vote")
 waitHook=nil;assert(gui.Enabled and #clicks==4,"cancel restores GUI without clicking")
+-- A moving vote button is a transient layout wait, not a failed attempt.
+local oldX=b.AbsolutePosition.X
+waitHook=function() b.AbsolutePosition.X=oldX+10 end
+assert(adapter.vote("American",1)==nil,"moving button must retry after layout settles")
+waitHook=nil;b.AbsolutePosition.X=oldX;assert(gui.Enabled and #clicks==4,"layout wait must not click")
 -- A button pressed before Stop is still released and the menu restored.
 local beforeDown=frames
 waitHook=function() if frames==beforeDown+2 then env.controller.running=false end end
@@ -80,6 +85,30 @@ env.controller.running=true
 services.VirtualInputManager=nil;env.getconnections=function() return {{Enabled=true,Fire=function() connections=connections+1 end}} end
 assert(adapter.vote("American",1) and connections==1)
 assert(gui.Enabled==true)
+-- Mouse retry moves, waits a frame, clicks, waits, and restores the cursor.
+local mouseMoves,mouseClicks={},0
+env.mousemoveabs=function(x,y) mouseMoves[#mouseMoves+1]={x,y} end
+env.mouse1click=function() mouseClicks=mouseClicks+1 end
+function env.UserInputService:GetMouseLocation() return {X=25,Y=30} end
+local frameBeforeMouse=frames
+assert(pointer(200,150,"mouse",b) and frames==frameBeforeMouse+3 and mouseClicks==1)
+assert(#mouseMoves==2 and mouseMoves[2][1]==25 and mouseMoves[2][2]==30 and gui.Enabled)
+-- A pending action cancelled after moving restores the mouse but never clicks.
+local still=true;local frameBeforeCancel=frames
+waitHook=function() if frames==frameBeforeCancel+2 then still=false end end
+assert(not pointer(200,150,"mouse",b,function() return still end))
+waitHook=nil;assert(mouseClicks==1 and #mouseMoves==4 and mouseMoves[4][1]==25 and gui.Enabled)
+-- Exercise the real alternate-detector selection logic separately.
+local alternate=section("function adapter.retryDetector(id)","function adapter.retryPiece(id,stillPending)")
+local hitDet,rootDet={},{}
+local hitbox={FindFirstChildOfClass=function() return hitDet end}
+local detPart={FindFirstChild=function() return hitbox end,FindFirstChildOfClass=function() return rootDet end}
+local altCount=0;local altAdapter={}
+local altEnv=setmetatable({adapter=altAdapter,pieceFor=function() return detPart end,log=function() end,
+    clickDetector=function(d) assert(d==rootDet);altCount=altCount+1;return true end},{__index=_G})
+assert(load(alternate,"alternate","t",altEnv))()
+assert(altAdapter.retryDetector("Piece1_1") and altCount==1,"alternate uses the distinct root detector")
+rootDet=hitDet;assert(altAdapter.retryDetector("Piece1_1")==nil and altCount==1,"same detector must not be retried")
 -- Test physical retry guard: visible, raycast-confirmed piece only.
 local retry=section("function adapter.retryPiece(id,stillPending)","function adapter.clickCell(row,col)")
 local V={};V.__index=V

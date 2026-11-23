@@ -28,7 +28,7 @@ c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("G
 local before=cells;c.event("PieceSelected","own",{{row=8,col=8,isCapture=true}});c.tick()
 assert(not c.running and cells==before,"server legal moves must match plan")
 -- Timeout must not repeatedly send clicks.
-c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+6;c.tick()
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+8;c.tick()
 assert(not c.running and cells==before,"missing acknowledgement must halt")
 -- A different selection while ours is pending must not result in a tile click.
 c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
@@ -71,6 +71,29 @@ c.start();c.vote("Start",{hasLocal=true})
 for i=1,6 do time=time+0.5;c.tick() end
 assert(layoutCalls==6 and c.running,"layout can settle before the first click")
 c.stop()
+-- A late server acknowledgement replaces the warning; the final rule remains visible.
+a.vote=function() return true end
+c.start();c.vote("Start",{hasLocal=true})
+for i=1,3 do time=time+2;c.tick() end
+time=time+2;c.tick();assert(c.status:find("пока не подтверждён",1,true),"timeout must describe uncertainty")
+c.vote("Voted",42,"American");assert(c.status:find("подтверждён",1,true) and not c.status:find("пока",1,true),"late confirmation clears warning")
+c.vote("Result","Classic");time=time+2;c.tick();assert(c.status:find("Classic",1,true),"final result must stay displayed while awaiting game")
+c.stop()
+-- A distinct detector gets one try; physical input waits, and an ack cancels it.
+local alt,physical=0,0
+a.retryDetector=function() alt=alt+1;return true end
+a.retryPiece=function() physical=physical+1;return true end
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
+local tilesBefore=cells;time=time+2;c.tick();assert(alt==1 and physical==0 and cells==tilesBefore,"alternate detector only, no blind destination")
+time=time+1;c.tick();assert(alt==1 and physical==0,"wait for detector acknowledgement")
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});time=time+2;c.tick()
+assert(physical==0 and cells==tilesBefore+1,"confirmed selection suppresses physical retry")
+c.stop()
+-- If alternate detector doesn't confirm, physical retry is sent once and timeout halts.
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
+time=time+2;c.tick();time=time+2;c.tick();c.tick();assert(alt==2 and physical==1,"retry methods must be staged and limited")
+time=time+4;c.tick();assert(not c.running and cells==tilesBefore+1,"no confirmation means halt without extra cell")
+a.retryDetector=nil
 -- A vote handler that yields may resume after Stop and a new Start.
 a.vote=function(_,_,pending)
     assert(pending());c.stop();c.start();assert(not pending(),"old pending predicate must not match a new session")

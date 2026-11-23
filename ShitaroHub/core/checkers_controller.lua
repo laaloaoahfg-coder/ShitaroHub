@@ -59,6 +59,7 @@ return function(engine, adapter)
             status("Голосование")
         elseif action=="Voted" and s.voteOpen and adapter.isLocalId(a) then
             s.voteAck=true;trace("VOTE_ACK",tostring(b))
+            status("Голос подтверждён; ожидаю итог")
         elseif action=="Result" and s.voteOpen then
             if adapter.seatKey()~=s.voteSeat then halt("стол изменился во время голосования") return end
             s.voteOpen=false
@@ -131,7 +132,11 @@ return function(engine, adapter)
     end
     function c.activity()
         if not c.running then return "Бот не действует" end
-        if s.voteOpen then return s.voteAck and "Голос подтверждён; жду итог" or "Пытаюсь проголосовать" end
+        if s.voteOpen then
+            if s.voteAck then return "Голос подтверждён; жду итог" end
+            if s.voteFailed then return "Жду подтверждения; можно выбрать вручную" end
+            return "Пытаюсь проголосовать"
+        end
         if s.initializing then return "Читаю доску" end
         if not s.match then return c.status end
         if not s.turn then return "Жду ход соперника" end
@@ -165,12 +170,14 @@ return function(engine, adapter)
         elseif s.voteOpen and not s.voteAck and s.voteAttempts>=3 and not s.voteFailed and now()>=(s.nextVote or 0) then
             s.voteFailed=true
             trace("VOTE_TIMEOUT","подтверждение голоса не получено")
-            status("Не удалось голосовать автоматически — выберите вручную")
+            status("Голос пока не подтверждён — можно выбрать вручную")
         end
         if not s.match then
             if not s.voteOpen and now()>=(s.nextSeat or 0) then
                 s.nextSeat=now()+2
-                if not adapter.isSeated() then adapter.seekSeat() else status("Ожидание соперника") end
+                if not adapter.isSeated() then adapter.seekSeat()
+                elseif s.mode then status("Правила: "..s.mode.."; жду начало")
+                else status("Ожидание соперника") end
             end
             return
         end
@@ -197,24 +204,38 @@ return function(engine, adapter)
             halt(labels[s.phase] or "нет подтверждения от игры") return
         end
         if s.phase=="select" and not s.selectRetried and s.retryAt and now()>=s.retryAt then
-            s.selectRetried=true
-            if adapter.retryPiece then
-                trace("SELECT_RETRY","физический клик по "..tostring(s.planId))
-                local expectedState,expectedId=s,s.planId
-                local function selectionStillPending()
-                    return c.running and s==expectedState and s.turn and s.phase=="select" and s.planId==expectedId
-                end
-                local attempted=adapter.retryPiece(s.planId,selectionStillPending)
+            local expectedState,expectedId=s,s.planId
+            local function selectionStillPending()
+                return c.running and s==expectedState and s.turn and s.phase=="select" and s.planId==expectedId
+            end
+            if not s.alternateTried then
+                s.alternateTried=true
+                local attempted=adapter.retryDetector and adapter.retryDetector(expectedId) or nil
                 if not c.running or s~=expectedState then return end
-                trace("SELECT_RETRY_RESULT",tostring(attempted))
-            else trace("SELECT_RETRY","физический клик недоступен") end
+                trace("SELECT_ALT_DETECTOR",tostring(attempted))
+                if attempted==true and selectionStillPending() then
+                    -- Give a different detector time to produce a server ack;
+                    -- never immediately send another input on the same piece.
+                    s.retryAt=now()+2
+                end
+                if attempted==true or not selectionStillPending() then return end
+            end
+            if selectionStillPending() then
+                s.selectRetried=true
+                if adapter.retryPiece then
+                    trace("SELECT_RETRY","физический клик по "..tostring(expectedId))
+                    local attempted=adapter.retryPiece(expectedId,selectionStillPending)
+                    if not c.running or s~=expectedState then return end
+                    trace("SELECT_RETRY_RESULT",tostring(attempted))
+                else trace("SELECT_RETRY","физический клик недоступен") end
+            end
         end
         if not s.phase then
             local move=engine.best(s.board,s.side,s.mode,{depth=4,nodes=5000})
             if not move then halt("нет допустимого хода") return end
             local p=s.board[move.r][move.c]
             if not p or not p.id then halt("не найдена выбранная шашка") return end
-            s.plan=move;s.planId=p.id;s.stepIndex=1;s.phase="selectReady";s.phaseUntil=now()+5;s.selectRetried=false
+            s.plan=move;s.planId=p.id;s.stepIndex=1;s.phase="selectReady";s.phaseUntil=now()+5;s.selectRetried=false;s.alternateTried=false
             local step=move.steps[1]
             trace("PLAN",tostring(p.id).." from="..move.r..","..move.c.." to="..step.r..","..step.c.." steps="..#move.steps.." capture="..tostring(step.cr~=nil))
         elseif s.phase=="selectReady" then
@@ -223,7 +244,7 @@ return function(engine, adapter)
             if result~=nil then trace("SELECT_ATTEMPT",tostring(s.planId).." result="..tostring(result)) end
             if result==nil and s.phase=="select" then s.phase="selectReady"
             elseif result==false then halt("не удалось выбрать шашку")
-            elseif result==true and s.phase=="select" then s.phaseUntil=now()+5;s.retryAt=now()+2 end
+            elseif result==true and s.phase=="select" then s.phaseUntil=now()+7.5;s.retryAt=now()+2 end
         elseif s.phase=="cell" then
             local step=s.plan.steps[s.stepIndex]
             local waitUntil=s.phaseUntil

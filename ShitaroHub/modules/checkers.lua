@@ -238,37 +238,53 @@ local function pointerClick(x,y,method,expected,stillPending)
     if not size or x<0 or y<0 or x>=size.X or y>=size.Y then log("INPUT_GUARD","outside viewport");return false end
     inputBusy=true
     local oldEnabled=gui.Enabled
-    local ok,result=pcall(function()
-        gui.Enabled=false
-        -- Let rendering and hit-testing actually update before injecting. The
-        -- hub has DisplayOrder 10000, so toggling it only for the same Lua
-        -- frame can still leave its window in the engine's input snapshot.
-        RunService.RenderStepped:Wait()
-        if not controller.running or (stillPending and not stillPending()) then
-            log("INPUT_GUARD","action no longer pending");return false
+    local function ready()
+        if not controller.running then log("INPUT_GUARD","bot stopped");return false end
+        if stillPending then
+            local ok,why=stillPending()
+            if not ok then
+                if why=="layout_changed" then log("INPUT_GUARD","button layout changed; retry");return nil end
+                log("INPUT_GUARD","action no longer pending or target changed");return false
+            end
         end
         if not guiHitSafe(x,y,expected) then return false end
+        return true
+    end
+    local ok,result=pcall(function()
+        gui.Enabled=false
+        RunService.RenderStepped:Wait()
+        local readyResult=ready()
+        if readyResult~=true then return readyResult end
         if method=="mouse" then
             if type(mousemoveabs)~="function" or (type(mouse1click)~="function" and (type(mouse1press)~="function" or type(mouse1release)~="function")) then return false end
             local got,old=pcall(function() return UserInputService:GetMouseLocation() end)
-            local moved=pcall(mousemoveabs,math.floor(x),math.floor(y))
-            if not moved then return false end
-            local clicked
-            if type(mouse1click)=="function" then clicked=pcall(mouse1click)
-            else
-                local down=pcall(mouse1press);local up=pcall(mouse1release)
-                clicked=down and up
-            end
+            if not pcall(mousemoveabs,math.floor(x),math.floor(y)) then return false end
+            -- Give the engine a frame to observe the moved cursor before the
+            -- press, then keep it there briefly after the click. Restore even
+            -- on error or cancellation.
+            local mouseOk,clicked=pcall(function()
+                RunService.RenderStepped:Wait()
+                local stillReady=ready()
+                if stillReady~=true then return stillReady end
+                local didClick
+                if type(mouse1click)=="function" then didClick=pcall(mouse1click)
+                else
+                    local down=pcall(mouse1press);local up=pcall(mouse1release)
+                    didClick=down and up
+                end
+                if didClick then pcall(function() RunService.RenderStepped:Wait() end) end
+                log("INPUT", "mouse click invoked="..tostring(didClick))
+                return didClick
+            end)
             if got and old then pcall(mousemoveabs,old.X,old.Y) end
-            log("INPUT", "mouse click invoked="..tostring(clicked))
+            if not mouseOk then log("INPUT","mouse injection error");return false end
             return clicked
         end
         local got,vim=pcall(function() return game:GetService("VirtualInputManager") end)
         if not got or not vim then return false end
         local down=pcall(function() vim:SendMouseButtonEvent(x,y,0,true,game,0) end)
         if down then pcall(function() RunService.RenderStepped:Wait() end) end
-        -- Always release a pressed button, even if Stop or acknowledgement
-        -- arrived while waiting. Never try another input after a partial down.
+        -- Always release after a down, even if Stop arrived while waiting.
         local up=pcall(function() vim:SendMouseButtonEvent(x,y,0,false,game,0) end)
         log("INPUT", "virtual click down="..tostring(down).." up="..tostring(up))
         return down
@@ -276,7 +292,7 @@ local function pointerClick(x,y,method,expected,stillPending)
     pcall(function() gui.Enabled=oldEnabled end)
     inputBusy=false
     if not ok then log("INPUT","click raised an error");return false end
-    return result==true
+    return result
 end
 local function clickVoteButton(b,screen,method,stillPending)
     local ok,x,y=pcall(function()
@@ -287,9 +303,12 @@ local function clickVoteButton(b,screen,method,stillPending)
     if not ok then log("VOTE_METHOD","button bounds unavailable");return false end
     local function valid()
         if stillPending and not stillPending() then return false end
-        if not screen.Enabled or not b.Visible then return false end
+        if not screen.Enabled or not b.Visible then return false,"layout_changed" end
         local pos,size=b.AbsolutePosition,b.AbsoluteSize
-        return size.X>1 and size.Y>1 and math.abs(pos.X+size.X/2-x)<1 and math.abs(pos.Y+size.Y/2-y)<1
+        if size.X<=1 or size.Y<=1 or math.abs(pos.X+size.X/2-x)>=1 or math.abs(pos.Y+size.Y/2-y)>=1 then
+            return false,"layout_changed"
+        end
+        return true
     end
     return pointerClick(x,y,method,b,valid)
 end
@@ -310,6 +329,7 @@ function adapter.vote(mode,attempt,stillPending)
         if not controller.running or (stillPending and not stillPending()) then return false end
         local fired=method=="connections" and safeSignalVote(b) or (method~="connections" and clickVoteButton(b,screen,method,stillPending))
         log("VOTE_METHOD",method.." attempted="..tostring(fired))
+        if fired==nil then return nil end
         if fired then return true end
     end
     return false
@@ -392,8 +412,25 @@ function adapter.selectPiece(id)
     local part=pieceFor(id)
     if not part then return false end
     local hitbox=part:FindFirstChild("ClickHitbox")
-    local detector=hitbox and hitbox:FindFirstChildOfClass("ClickDetector") or part:FindFirstChildOfClass("ClickDetector")
+    local hitDetector=hitbox and hitbox:FindFirstChildOfClass("ClickDetector")
+    local detector=hitDetector or part:FindFirstChildOfClass("ClickDetector")
+    log("SELECT_DETECTOR",hitDetector and "hitbox" or (detector and "root" or "missing"))
     return clickDetector(detector,"piece "..id)
+end
+function adapter.retryDetector(id)
+    local part=pieceFor(id)
+    if not part then log("ALT_DETECTOR","piece unavailable");return nil end
+    local hitbox=part:FindFirstChild("ClickHitbox")
+    local hitDetector=hitbox and hitbox:FindFirstChildOfClass("ClickDetector")
+    local rootDetector=part:FindFirstChildOfClass("ClickDetector")
+    -- selectPiece uses the hitbox detector first if present. Only try a
+    -- distinct second detector; never repeat an already-invoked detector.
+    if not hitDetector or not rootDetector or hitDetector==rootDetector then
+        log("ALT_DETECTOR","no distinct root detector");return nil
+    end
+    local result=clickDetector(rootDetector,"alternate piece "..id)
+    log("ALT_DETECTOR","root result="..tostring(result))
+    return result
 end
 function adapter.retryPiece(id,stillPending)
     local part=pieceFor(id);local camera=Workspace.CurrentCamera
@@ -430,9 +467,9 @@ function adapter.retryPiece(id,stillPending)
         if not current then log("RETRY_GUARD",why);return false end
         return math.abs(current.X-point.X)<2 and math.abs(current.Y-point.Y)<2
     end
-    if pointerClick(point.X,point.Y,"vim",nil,valid) then return true end
+    if pointerClick(point.X,point.Y,"mouse",nil,valid) then return true end
     if stillPending and not stillPending() then return false end
-    return pointerClick(point.X,point.Y,"mouse",nil,valid)
+    return pointerClick(point.X,point.Y,"vim",nil,valid)
 end
 function adapter.clickCell(row,col)
     if not model or not cells or not adapter.isSeated() then return false end
