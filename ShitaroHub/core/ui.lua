@@ -2840,6 +2840,9 @@ local cursorLocked = false
 local cursorHookInstalled = false
 local savedMode
 local lastPointer
+-- where the pointer was before an engine-side lock pulled it to the centre
+local pulledFrom
+local restoreTries = 0
 local warpAt = 0
 
 local function wrapCallback(callback)
@@ -2979,6 +2982,8 @@ local function forceCursor()
     end
 
     lastPointer = nil
+    pulledFrom = nil
+    restoreTries = 0
     writeCursor(Enum.MouseBehavior.Default, true)
     cursorLocked = true
 end
@@ -3004,6 +3009,8 @@ releaseCursor = function()
     end)
 
     lastPointer = nil
+    pulledFrom = nil
+    restoreTries = 0
 end
 
 toggleMenu = function()
@@ -3022,8 +3029,26 @@ end
 -- A lock that got through already moved the pointer, and nothing in Lua can
 -- place it back absolutely; mousemoverel is the only way to undo the warp, and
 -- only some executors have it.
+--
+-- Holding the right mouse button is what breaks it: the engine captures the
+-- pointer for the whole press and drops it in the middle on release, and a
+-- relative move made while the capture is still on turns into camera rotation
+-- instead of cursor movement. So the position from before the jump is kept and
+-- the pointer is put back on the first frame that sees MouseBehavior and the
+-- pointer itself free again.
 local function canMovePointer()
     return type(mousemoverel) == "function"
+end
+
+local function pointerCentre()
+    local cam = workspace.CurrentCamera
+    local viewport = cam and cam.ViewportSize
+
+    if not viewport then
+        return nil
+    end
+
+    return viewport * 0.5
 end
 
 local function settlePointer()
@@ -3035,36 +3060,54 @@ local function settlePointer()
         return
     end
 
-    local previous = lastPointer
-    lastPointer = location
+    local centre = pointerCentre()
 
-    if not previous or not menuOpen() or not canMovePointer() then
+    if not centre then
         return
     end
-
-    local cam = workspace.CurrentCamera
-    local viewport = cam and cam.ViewportSize
-
-    if not viewport then
-        return
-    end
-
-    local center = viewport * 0.5
 
     -- only an exact recentre counts: a player moving the mouse towards the
     -- middle of the screen must not be pulled back
-    if (location - center).Magnitude > 2
-        or (previous - center).Magnitude <= 12
-        or os.clock() - warpAt < 0.2 then
+    if (location - centre).Magnitude > 2 then
+        lastPointer = location
+        pulledFrom = nil
+        restoreTries = 0
         return
     end
 
+    local previous = lastPointer
+
+    lastPointer = location
+
+    -- right after the jump the old position is still what the last frame saw,
+    -- so it is recorded once and kept until the pointer is back where it was
+    if previous and (previous - centre).Magnitude > 12 then
+        pulledFrom = previous
+    end
+
+    if not pulledFrom or not menuOpen() or not canMovePointer() then
+        return
+    end
+
+    -- a relative move made while the pointer is captured only rotates the
+    -- camera, so wait for the lock to be undone by assertCursor
+    if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+        return
+    end
+
+    if restoreTries >= 8 or os.clock() - warpAt < 0.1 then
+        return
+    end
+
+    local back = pulledFrom - centre
+
+    -- the first move of a burst can be swallowed by the engine landing in the
+    -- middle, the retries cover that without looping forever
+    restoreTries = restoreTries + 1
     warpAt = os.clock()
 
-    local back = previous - center
-
     pcall(mousemoverel, back.X, back.Y)
-    lastPointer = previous
+    lastPointer = pulledFrom
 end
 
 -- Keep re-asserting it: games re-lock the mouse on every one of their frames.
@@ -3100,6 +3143,38 @@ local function assertCursor()
 end
 
 connect(RunService.RenderStepped, assertCursor)
+
+-- The camera button locks the pointer from the moment it goes down: resetting
+-- on the event itself wins the frame before the game's camera step runs, so
+-- the pointer is not left in the middle when the button comes back up.
+local function onPointerInput(input)
+    if not menuOpen() then
+        return
+    end
+
+    local kind = input.UserInputType
+
+    if kind ~= Enum.UserInputType.MouseButton1
+        and kind ~= Enum.UserInputType.MouseButton2
+        and kind ~= Enum.UserInputType.MouseButton3 then
+        return
+    end
+
+    writeCursor(Enum.MouseBehavior.Default, true)
+end
+
+connect(UserInputService.InputBegan, onPointerInput)
+connect(UserInputService.InputEnded, onPointerInput)
+
+-- fires for the writes the engine makes on its own as well, which never reach
+-- the metatable hook
+pcall(function()
+    connect(UserInputService:GetPropertyChangedSignal("MouseBehavior"), function()
+        if menuOpen() then
+            writeCursor(Enum.MouseBehavior.Default, true)
+        end
+    end)
+end)
 
 if RunService.Heartbeat then
     connect(RunService.Heartbeat, assertCursor)
