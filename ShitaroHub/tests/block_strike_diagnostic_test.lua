@@ -186,3 +186,38 @@ local printed = false
 for _, message in ipairs(messages) do if message == report then printed = true end end
 assert(printed)
 nativePrint("PASS: focused player diagnostic (nicknames, sampling, movement, fallback)")
+
+-- Names diagnostic discovers HUD labels and non-Players character models.
+local playerGui = new("PlayerGui", "PlayerGui", me)
+local scoreboard = new("Frame", "Scoreboard", playerGui)
+new("TextLabel", "Victim", scoreboard, { Text = "BbcVetle", Visible = true })
+local chat = new("Frame", "ChatFrame", playerGui)
+new("TextLabel", "Message", chat, { Text = "BbcVetle PRIVATE_CHAT", Visible = true })
+local enemyNpc, npcRoot = avatar("CustomBot", 30)
+enemyNpc.attrs.DisplayName = "BbcVetle"
+writefile = function(path, data) files[path] = data end
+setclipboard = function(data) clipboard = data end
+clipboard = nil
+dofile("diagnostics/block_strike_names.lua")
+report = assert(env.ShitaroBlockStrikeNamesReport)
+assert(report == clipboard)
+assert(select(2, report:gsub("========== SAMPLE %d+/20", "")) == 20)
+assert(report:find("HUD exact target matches=1 shown=1", 1, true))
+assert(report:find("text=BbcVetle", 1, true))
+assert(not report:find("PRIVATE_CHAT", 1, true))
+assert(report:find("name=CustomBot path=Workspace.CustomBot targetMatch=true playerOwner=<none>", 1, true))
+assert(report:find("attr DisplayName=BbcVetle", 1, true))
+assert(report:find("END OF REPORT", 1, true))
+local foundNames = false
+for path, data in pairs(files) do
+    if path:match("block_strike_names_.*%.txt$") then assert(data == report); foundNames = true end
+end
+assert(foundNames)
+writefile = function() error("disk unavailable") end
+setclipboard = nil
+dofile("diagnostics/block_strike_names.lua")
+report = env.ShitaroBlockStrikeNamesReport
+printed = false
+for _, message in ipairs(messages) do if message == report then printed = true end end
+assert(printed)
+nativePrint("PASS: name diagnostic (non-player model, HUD target, chat omission, output fallback)")
