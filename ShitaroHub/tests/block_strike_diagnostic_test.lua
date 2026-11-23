@@ -131,3 +131,58 @@ local printedReport = false
 for _, message in ipairs(messages) do if message == report then printedReport = true end end
 assert(printedReport, "report should be printed if both output methods fail")
 nativePrint("PASS: diagnostic mock integration (sampling, teams, attributes, custom models, output fallbacks)")
+
+-- Focused player report: names, custom avatars, projection, and immediate samples.
+function object:GetAttribute(name) return self.attrs[name] end
+function object:IsDescendantOf(ancestor)
+    local parent = self.Parent
+    while parent do
+        if parent == ancestor then return true end
+        parent = parent.Parent
+    end
+    return false
+end
+camera.ViewportSize = vec(1920, 1080, 0)
+me.attrs.Team, target.attrs.Team, teammate.attrs.Team = "Counter-Terrorists", "Terrorists", "Counter-Terrorists"
+local replicated = new("ReplicatedStorage", "ReplicatedStorage")
+local culled = new("Folder", "_PVS_CulledCharacters", replicated)
+local waits = 0
+function task.wait()
+    waits = waits + 1
+    enemyRoot.Position = vec(enemyRoot.Position.X + 2, 0, 0)
+    if waits == 3 then enemy.Parent = culled end
+    if waits == 7 then enemy.Parent = workspace end
+end
+writefile = function(path, text) files[path] = text end
+setclipboard = function(text) clipboard = text end
+clipboard = nil
+dofile("diagnostics/block_strike_players.lua")
+report = assert(env.ShitaroBlockStrikePlayersReport)
+assert(report == clipboard)
+assert(select(2, report:gsub("========== SAMPLE %d+/15", "")) == 15)
+assert(report:find("PLAYER nickname=Enemy display=Enemy userId=2", 1, true))
+assert(report:find("team=TeamAttribute:Terrorists", 1, true))
+assert(report:find("character=Workspace.Enemy", 1, true))
+assert(report:find("inWorkspace=true", 1, true))
+assert(report:find("character=ReplicatedStorage._PVS_CulledCharacters.Enemy", 1, true))
+assert(report:find("inWorkspace=false", 1, true))
+assert(report:find("moved=2.00", 1, true))
+assert(report:find("onScreen=true", 1, true))
+assert(report:find("END OF REPORT", 1, true))
+local savedPlayerReport = false
+for path, data in pairs(files) do
+    if path:match("block_strike_players_.*%.txt$") then
+        assert(data == report)
+        savedPlayerReport = true
+    end
+end
+assert(savedPlayerReport)
+-- Failed file and clipboard output falls back to console and in-memory report.
+writefile = function() error("disk unavailable") end
+setclipboard = nil
+dofile("diagnostics/block_strike_players.lua")
+report = env.ShitaroBlockStrikePlayersReport
+local printed = false
+for _, message in ipairs(messages) do if message == report then printed = true end end
+assert(printed)
+nativePrint("PASS: focused player diagnostic (nicknames, sampling, movement, fallback)")
