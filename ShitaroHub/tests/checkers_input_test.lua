@@ -35,6 +35,9 @@ local env=setmetatable({adapter=adapter,playerGui=pg,gui=gui,controller={running
 }, {__index=_G})
 local build=assert(load(votes.."\nreturn pointerClick", "input", "t", env))
 local pointer=build()
+local oldSize=b.AbsoluteSize;b.AbsoluteSize={X=0,Y=0}
+assert(adapter.vote("American",1)==nil and #clicks==0 and connections==0,"unlaid button must wait without input")
+b.AbsoluteSize=oldSize
 assert(adapter.vote("American",1),"visible vote button should get virtual click")
 assert(#clicks==2 and clicks[1].down and not clicks[2].down and clicks[1].x==200 and clicks[1].y==150)
 assert(gui.Enabled==true and connections==0,"UI state restored; no duplicate connection invocation")

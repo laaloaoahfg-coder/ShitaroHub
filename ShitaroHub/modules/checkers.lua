@@ -40,8 +40,26 @@ text(statPage,"Heading","Статистика игр бота",10,24)
 local statsLabel=text(statPage,"Stats","",50,120)
 local backButton=button(statPage,"Back","Назад",16,190,100)
 
+-- A sibling of the menu window: remains visible when the window is hidden.
+-- Only the two small buttons receive input, never a full-screen overlay.
+local hud=make("Frame",{Name="CheckersHUD",Visible=false,Active=false,
+    Position=UDim2.new(1,-226,0,48),Size=UDim2.fromOffset(218,162),
+    BackgroundTransparency=0.12,BackgroundColor3=Color3.fromRGB(28,24,36),ZIndex=30},gui)
+corner(hud,UDim.new(0,8))
+local hudTitle=make("TextLabel",{Name="Heading",Text="Шашки · бот",TextSize=14,
+    Position=UDim2.fromOffset(8,4),Size=UDim2.new(1,-16,0,20),ZIndex=31,Active=false},hud)
+local hudStatus=make("TextLabel",{Name="Status",Text="Остановлен",TextSize=13,TextWrapped=true,
+    Position=UDim2.fromOffset(8,25),Size=UDim2.new(1,-16,0,40),ZIndex=31,Active=false},hud)
+local hudAction=make("TextLabel",{Name="Action",Text="",TextSize=12,TextWrapped=true,
+    Position=UDim2.fromOffset(8,64),Size=UDim2.new(1,-16,0,26),ZIndex=31,Active=false},hud)
+local hudTime=make("TextLabel",{Name="Turn",Text="",TextSize=12,TextWrapped=true,
+    Position=UDim2.fromOffset(8,91),Size=UDim2.new(1,-16,0,25),ZIndex=31,Active=false},hud)
+local hudStop=button(hud,"Stop","Stop",8,122,93);hudStop.ZIndex=32
+local hudCopy=button(hud,"CopyLog","Копировать лог",108,122,102);hudCopy.ZIndex=32;hudCopy.TextSize=11
+
 local model, cells, moving, lastSeatAttempt = nil, nil, false, -math.huge
 local logger, lastStatus, controller
+local copyFeedbackUntil=0
 local env=(getgenv and getgenv()) or _G
 local function log(kind,message)
     if logger then pcall(logger.add,kind,message) end
@@ -69,7 +87,7 @@ local function saveLog(reason)
     local copyOk=false;if copy then copyOk=pcall(copy,report) end
     logLabel.Text=copyOk and "Лог скопирован в буфер" or (fileOk and "Буфер недоступен; лог сохранён в файл" or "Лог доступен в getgenv().ShitaroCheckersBotLog")
     if not copyOk and not fileOk then warn("[checkers] clipboard and file unavailable; log in getgenv().ShitaroCheckersBotLog") end
-    return copyOk or fileOk
+    return copyOk or fileOk,copyOk
 end
 local statsPath="ShitaroHub/checkers_stats_"..tostring(player.UserId)..".json"
 local persistence=false
@@ -281,8 +299,10 @@ function adapter.vote(mode,attempt,stillPending)
     local panel=screen and screen:FindFirstChild("Panel")
     local b=panel and panel:FindFirstChild(mode=="American" and "AmericanButton" or "ClassicButton")
     if not b or not b:IsA("GuiButton") or not b.Visible or not screen.Enabled then
-        log("VOTE_BUTTON","not ready");return false
+        log("VOTE_BUTTON","not ready");return nil
     end
+    local sized=pcall(function() assert(b.AbsoluteSize.X>1 and b.AbsoluteSize.Y>1) end)
+    if not sized then log("VOTE_BUTTON","waiting for layout");return nil end
     -- An injected click is not proof; only a Voted event confirms a vote.
     local methods=attempt==1 and {"vim","mouse","connections"}
         or (attempt==2 and {"mouse","connections","vim"} or {"connections","vim","mouse"})
@@ -391,7 +411,14 @@ function adapter.retryPiece(id,stillPending)
         end)
         if not hitOk then return nil,"raycast_error" end
         if not hit or not hit.Instance then return nil,"raycast_no_hit" end
-        if hit.Instance~=part and not safeDescendant(hit.Instance,part) then return nil,"raycast_other_object" end
+        if hit.Instance~=part and not safeDescendant(hit.Instance,part) then
+            local board=model and model:FindFirstChild("Board")
+            local pieces=model and model:FindFirstChild("Pieces")
+            local kind=(board and safeDescendant(hit.Instance,board) and "board")
+                or (pieces and safeDescendant(hit.Instance,pieces) and "other_piece") or "other"
+            log("RETRY_HIT",kind)
+            return nil,"raycast_other_object"
+        end
         return screen
     end
     local point,reason=projected()
@@ -419,6 +446,12 @@ local function refresh()
     stateLabel.Text=controller.status
     local remaining=controller.timeLeft()
     clockLabel.Text=(controller.mode and ("Правила: "..controller.mode.."   ") or "")..(remaining and ("Осталось: "..remaining.." сек.") or "")
+    hudStatus.Text=controller.status
+    hudAction.Text=controller.activity()
+    if os.clock()>=copyFeedbackUntil then hudCopy.Text="Копировать лог" end
+    local turn=controller.turnInfo()
+    hudTime.Text=(turn or "")..(remaining and (" · "..remaining.." сек.") or "")
+        ..(controller.mode and (" · "..controller.mode) or "")
     local s=controller.stats
     statsLabel.Text="Игр: "..s.games.."\nПобед: "..s.wins.."\nПоражений: "..s.losses.."\nНеизвестный результат: "..s.unknown.."\n"..(persistence and "Статистика сохраняется локально" or "Только текущая сессия")
 end
@@ -488,6 +521,7 @@ local function ensureListeners()
 end
 connect(startButton.Activated,function()
     if controller.running then return end
+    hud.Visible=true
     logger=createLog(os.clock);lastStatus=nil;lastDetectorState=nil
     log("SESSION","placeId="..tostring(game.PlaceId).." session started")
     log("CAPABILITIES","fireclickdetector="..tostring(type(fireclickdetector)=="function")
@@ -495,18 +529,30 @@ connect(startButton.Activated,function()
         .." mousemoveabs="..tostring(type(mousemoveabs)=="function")
         .." mouse1click="..tostring(type(mouse1click)=="function"))
     if type(fireclickdetector)~="function" then
-        stateLabel.Text="Нет fireclickdetector — бот не запущен";log("ERROR","fireclickdetector unavailable");saveLog("start_failed");return
+        stateLabel.Text="Нет fireclickdetector — бот не запущен";hudStatus.Text=stateLabel.Text;log("ERROR","fireclickdetector unavailable");saveLog("start_failed");return
     end
     if not ensureListeners() then
-        stateLabel.Text="Игровые события не найдены — бот не запущен";log("ERROR","game events unavailable");saveLog("start_failed");return
+        stateLabel.Text="Игровые события не найдены — бот не запущен";hudStatus.Text=stateLabel.Text;log("ERROR","game events unavailable");saveLog("start_failed");return
     end
     controller.start()
+    if ctx.hideMenu then
+        local ok=pcall(ctx.hideMenu)
+        log("MENU",ok and "основное окно скрыто" or "не удалось скрыть окно")
+    end
 end)
-connect(stopButton.Activated,function()
+local function stopBot()
     if controller.running then controller.stop() else saveLog("manual_stop") end
     refresh()
-end)
-connect(copyButton.Activated,function() saveLog("manual_copy") end)
+end
+local function copyLog()
+    local saved,copied=saveLog("manual_copy")
+    copyFeedbackUntil=os.clock()+4
+    hudCopy.Text=copied and "Скопировано" or (saved and "Файл сохранён" or "Нет буфера")
+end
+connect(stopButton.Activated,stopBot)
+connect(hudStop.Activated,stopBot)
+connect(copyButton.Activated,copyLog)
+connect(hudCopy.Activated,copyLog)
 connect(statsButton.Activated,function() main.Visible=false;statPage.Visible=true;refresh() end)
 connect(backButton.Activated,function() statPage.Visible=false;main.Visible=true end)
 refresh()
@@ -516,8 +562,11 @@ task.spawn(function()
         if not gui.Parent then break end
         if controller.running then
             local ok,err=pcall(controller.tick)
-            if not ok then log("ERROR","bot tick failed");controller.stop();stateLabel.Text="Ошибка; бот остановлен";warn("[checkers] "..tostring(err)) end
-            refresh()
+            if not ok then
+                log("ERROR","bot tick failed");controller.stop();refresh()
+                stateLabel.Text="Ошибка; бот остановлен";hudStatus.Text=stateLabel.Text
+                warn("[checkers] "..tostring(err))
+            else refresh() end
         end
     end
     controller.stop()

@@ -2634,6 +2634,7 @@ do
         getBindKey = function() return bindKey end,
         isCapturingBind = function() return capturingBind end,
         setCapturingBind = function(value) capturingBind = value end,
+        hideMenu = function() if uiState.hideMenu then uiState.hideMenu() end end,
     }
 
     local function trace(err)
@@ -3031,6 +3032,12 @@ toggleMenu = function()
     else
         releaseCursor()
     end
+end
+
+-- Modules can hide the window without destroying the hub or bypassing cursor
+-- cleanup. The watermark remains available to reopen it.
+uiState.hideMenu = function()
+    if window.Visible and not uiState.closed then toggleMenu() end
 end
 
 -- A lock that got through already moved the pointer, and nothing in Lua can

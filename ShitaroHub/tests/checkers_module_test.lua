@@ -64,10 +64,11 @@ for r=1,8 do for col=1,8 do
 end end
 local modeGui=new("ScreenGui","ModeSelectGui",pg,{Enabled=true})
 local panel=new("Frame","Panel",modeGui)
-new("ImageButton","AmericanButton",panel,{Visible=true})
-new("ImageButton","ClassicButton",panel,{Visible=true})
+new("ImageButton","AmericanButton",panel,{Visible=true,AbsoluteSize={X=100,Y=50},AbsolutePosition={X=50,Y=50}})
+new("ImageButton","ClassicButton",panel,{Visible=true,AbsoluteSize={X=100,Y=50},AbsolutePosition={X=200,Y=50}})
 local activeGui=new("ScreenGui","ShitaroMenuOnly",pg)
-local page=new("Frame","checkers",activeGui)
+local window=new("Frame","Menu",activeGui,{Visible=true})
+local page=new("Frame","checkers",window)
 local players={LocalPlayer=localPlayer}
 local services={Workspace=world,ReplicatedStorage=rep,HttpService={},UserInputService={},RunService={RenderStepped={Wait=function() end}}}
 game={PlaceId=75526590957446};function game:GetService(n) return assert(services[n]) end
@@ -84,28 +85,38 @@ function task.wait() coroutine.yield() end
 local function step() local ok,err=coroutine.resume(co);assert(ok,err) end
 local loader={}
 function loader.module(path) return assert(loadfile(path))() end
+local hideCount=0
 local ctx={Players=players,player=localPlayer,playerGui=pg,gui=activeGui,Loader=loader,tabs={[7]={page=page}},
-    colors={text=1},corner=function() end,
+    colors={text=1},corner=function() end,hideMenu=function() hideCount=hideCount+1;window.Visible=false end,
     make=function(class,props,parent) return new(class,props.Name or class,parent,props) end,
     connect=function(s,f) return s:Connect(f) end}
 assert(loadfile("modules/checkers.lua"))()(ctx)
 local main=assert(page:FindFirstChild("CheckersBot"))
 local stats=assert(page:FindFirstChild("CheckersStatistics"))
+local hud=assert(activeGui:FindFirstChild("CheckersHUD"));assert(hud.Visible==false,"HUD hidden before start")
+local hudStatus=assert(hud:FindFirstChild("Status"));local hudAction=assert(hud:FindFirstChild("Action"));local hudTurn=assert(hud:FindFirstChild("Turn"))
+local hudStop=assert(hud:FindFirstChild("Stop"));local hudCopy=assert(hud:FindFirstChild("CopyLog"))
 local start=assert(main:FindFirstChild("Start"));local stop=assert(main:FindFirstChild("Stop"))
 local statsButton=assert(main:FindFirstChild("Statistics"))
 assert(#clicks==0,"bot must be disabled on load")
 local clickApi=fireclickdetector;fireclickdetector=nil
 start.Activated:Fire();step();assert(#clicks==0 and main:FindFirstChild("Status").Text:find("fireclickdetector",1,true),"start refuses missing executor capability")
+assert(hud.Visible and hudStatus.Text:find("fireclickdetector",1,true) and hideCount==0,"failed start stays visible and does not hide menu")
 fireclickdetector=clickApi
 start.Activated:Fire()
+assert(hud.Visible and not window.Visible and hideCount==1,"valid start hides window but leaves HUD visible")
+assert(hudStatus.Text=="Поиск стола" and hudAction.Text=="Поиск стола")
+hudCopy.Activated:Fire();assert(clipboard and clipboard:find("manual_copy",1,true),"HUD copies log")
 votes.OnClientEvent:Fire("Start",{{userId=42}},15)
 step();assert(voteCalls==1,"one local vote")
+assert(hudAction.Text=="Пытаюсь проголосовать","HUD shows voting")
 votes.OnClientEvent:Fire("Voted",42,"American")
 votes.OnClientEvent:Fire("Result","Classic",true)
 remote.OnClientEvent:Fire("GameStarted")
 remote.OnClientEvent:Fire("TurnChanged",localPlayer,{})
 remote.OnClientEvent:Fire("YourTurn",35)
-step();step();step()
+step();assert(hudTurn.Text:find("Ваш ход",1,true) and hudTurn.Text:find("Classic",1,true),"HUD shows turn and rules")
+step();step()
 assert(#clicks==1,"must select exactly one piece")
 local selected=clicks[1].Parent.Parent.Name
 local e=assert(loadfile("core/checkers_engine.lua"))()
@@ -126,7 +137,16 @@ assert(clipboard:find("GAME GameOver winner=local",1,true) and clipboard:find("S
 assert(not clipboard:find("Me",1,true) and not clipboard:find("UserId=42",1,true),"log must not expose player identifiers")
 statsButton.Activated:Fire()
 assert(stats.Visible and stats:FindFirstChild("Stats").Text:find("Побед: 1",1,true),"stats screen win")
-stop.Activated:Fire();step();assert(#clicks==2,"no more actions after stop")
+hudStop.Activated:Fire();step();assert(#clicks==2,"no more actions after HUD stop")
+assert(hud.Visible and hudStatus.Text=="Остановлен" and hudAction.Text=="Бот не действует","HUD persists after stop")
+-- An unexpected server selection stops safely and leaves its reason on the HUD.
+start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
+votes.OnClientEvent:Fire("Result","American",false);remote.OnClientEvent:Fire("GameStarted")
+remote.OnClientEvent:Fire("TurnChanged",localPlayer,{});step();step();step()
+assert(hudAction.Text=="Жду подтверждения шашки","HUD displays pending selection")
+remote.OnClientEvent:Fire("PieceSelected","Piece1_999",{{row=1,col=1,isCapture=false}})
+assert(hud.Visible and hudStatus.Text:find("Остановлен",1,true) and hudAction.Text=="Бот не действует","HUD retains halt reason")
+hudCopy.Activated:Fire();assert(hudCopy.Text=="Скопировано" and clipboard:find("HALT",1,true),"HUD copies halt log")
 -- When standing, prefer the empty seat opposite an occupied chair and cancel
 -- any movement the bot initiated when the user presses Stop.
 hum.SeatPart=nil;seat2.Occupant=nil;seat1.Occupant=new("Humanoid","Opponent")

@@ -125,6 +125,21 @@ return function(engine, adapter)
             s.phase="cell";s.options=b;s.phaseUntil=now()+5
         end
     end
+    function c.turnInfo()
+        if not c.running or not s.match then return nil end
+        return s.turn and "Ваш ход" or "Ход соперника"
+    end
+    function c.activity()
+        if not c.running then return "Бот не действует" end
+        if s.voteOpen then return s.voteAck and "Голос подтверждён; жду итог" or "Пытаюсь проголосовать" end
+        if s.initializing then return "Читаю доску" end
+        if not s.match then return c.status end
+        if not s.turn then return "Жду ход соперника" end
+        local labels={selectReady="Выбираю шашку",select="Жду подтверждения шашки",
+            cell="Готовлю нажатие клетки",move="Жду подтверждения хода",
+            continue="Жду продолжение взятия",turn="Жду смену хода"}
+        return labels[s.phase] or "Ищу ход"
+    end
     function c.timeLeft()
         if not c.running or not s.turn or not s.deadline then return nil end
         return math.max(0,math.ceil(s.deadline-now()))
@@ -140,7 +155,13 @@ return function(engine, adapter)
             local ok=adapter.vote("American",s.voteAttempts,voteStillPending)
             if not c.running or s~=expectedState then return end
             trace("VOTE_ATTEMPT", "номер="..s.voteAttempts.." вызван="..tostring(ok))
-            if not ok and voteStillPending() then status("Голосую; при необходимости выберите вручную") end
+            if ok==nil and voteStillPending() then
+                -- A freshly created vote GUI may still have zero size. Do not
+                -- spend an input attempt until the button can be targeted.
+                s.voteAttempts=s.voteAttempts-1;s.nextVote=now()+0.4
+            elseif not ok and voteStillPending() then
+                status("Голосую; при необходимости выберите вручную")
+            end
         elseif s.voteOpen and not s.voteAck and s.voteAttempts>=3 and not s.voteFailed and now()>=(s.nextVote or 0) then
             s.voteFailed=true
             trace("VOTE_TIMEOUT","подтверждение голоса не получено")

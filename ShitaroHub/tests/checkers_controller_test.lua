@@ -59,6 +59,18 @@ c.stop()
 c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
 c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});time=time+3;c.tick()
 assert(retries==1,"acknowledgement suppresses selection retry");c.stop()
+-- An unlaid vote button doesn't exhaust the three attempts.
+local layoutCalls=0
+a.vote=function(_,attempt)
+    layoutCalls=layoutCalls+1
+    assert(attempt==1,"waiting for layout must not consume a vote attempt")
+    if layoutCalls<=5 then return nil end
+    return true
+end
+c.start();c.vote("Start",{hasLocal=true})
+for i=1,6 do time=time+0.5;c.tick() end
+assert(layoutCalls==6 and c.running,"layout can settle before the first click")
+c.stop()
 -- A vote handler that yields may resume after Stop and a new Start.
 a.vote=function(_,_,pending)
     assert(pending());c.stop();c.start();assert(not pending(),"old pending predicate must not match a new session")
