@@ -1039,7 +1039,14 @@ xpcall(function()
 
         local char = target.Character
 
-        if not char or not char.Parent then
+        -- Character references can survive in ReplicatedStorage while the game
+        -- PVS-culls them. Their last coordinates are not live world positions.
+        if not char or not char:IsDescendantOf(Workspace) then
+            return false
+        end
+
+        if char:GetAttribute("CharacterType") == "PlayerCustomCharacter"
+            and char:GetAttribute("ClientCharacterPresentationVisible") == false then
             return false
         end
 

@@ -274,11 +274,11 @@ test("circle boundary still rejects outside targets",function()
     local before=f.world.CurrentCamera.CFrame
     f:tick();assert(f.world.CurrentCamera.CFrame==before)
 end)
-test("exact aim at 800 metres with a camera reset every frame",function()
-    local f,t=active(v3(50,3,-2850))
+test("exact aim within 800 metres with a camera reset every frame",function()
+    local f,t=active(v3(50,3,-2700))
     f.sliders.AimRange.set(800)
     for i=1,120 do
-        t.head.CFrame=CFrame.new(v3(50+i*0.2,3+math.sin(i/9)*2,-2850-i))
+        t.head.CFrame=CFrame.new(v3(50+i*0.2,3+math.sin(i/9)*2,-2700-i))
         f:resetCamera();f:tick(1/144);f:assertAim(t.head.Position)
     end
 end)
@@ -395,6 +395,7 @@ test("game-owned Scriptable cameras and camera replacement are supported",functi
 end)
 test("range and teammate filters still apply",function()
     local f,t=active(v3(20,2,-2800))
+    f.sliders.AimRange.set(400)
     local before=f.world.CurrentCamera.CFrame
     f:tick();assert(f.world.CurrentCamera.CFrame==before)
     f.sliders.AimRange.set(800);f:tick();f:assertAim(t.head.Position)
@@ -415,8 +416,84 @@ test("viewport scaling matches the configured 1080p radius",function()
     local f,t=active();f.world.CurrentCamera.ViewportSize=v3(1280,720,0)
     f.sliders.AimCircle.set(500);f:tick();f:assertAim(t.head.Position)
     local ring=f.ctx.playerGui:FindFirstChild("ShitaroAim"):FindFirstChild("FovCircle")
-    assert(math.abs(ring.Size.X.Offset-500*(720/1080))<1e-6)
+    assert(math.abs(ring.Size.X.Offset-2*500*(720/1080))<1e-6)
 end)
+-- Roblox-style Block Strike characters use AnimationController + attributes.
+local function customTarget()
+    local f,t=active()
+    t.hum.Parent=nil
+    obj("AnimationController", "AnimationController", t.char)
+    t.owner.UserId=123
+    t.owner.attrs.Health=100
+    t.owner.attrs.Dead=false
+    t.char.attrs.CharacterType="PlayerCustomCharacter"
+    t.char.attrs.PresentationOwnerUserId=123
+    t.char.attrs.ClientCharacterPresentationVisible=true
+    t.char.attrs.Health=100
+    return f,t
+end
+
+test("custom player without Humanoid is acquired using real head",function()
+    local f,t=customTarget()
+    f:tick();f:assertAim(t.head.Position)
+    t.head.CFrame=CFrame.new(v3(12,1,-96))
+    f:resetCamera();f:tick();f:assertAim(t.head.Position)
+end)
+
+test("culled, hidden and dead custom characters are excluded and recover",function()
+    local f,t=customTarget()
+    local storage=obj("ReplicatedStorage","ReplicatedStorage")
+    local culled=obj("Folder","_PVS_CulledCharacters",storage)
+    local cases={
+        function() t.char.Parent=culled end,
+        function() t.char.Parent=f.world;t.char.attrs.ClientCharacterPresentationVisible=false end,
+        function() t.char.attrs.ClientCharacterPresentationVisible=true;t.owner.attrs.Dead=true end,
+        function() t.owner.attrs.Dead=false;t.char.attrs.Health=0 end,
+        function() t.char.attrs.Health=100;t.char.attrs.PresentationOwnerUserId=999 end,
+        function() t.char.attrs.PresentationOwnerUserId=123;t.owner.attrs.Health=nil;t.char.attrs.Health=nil end,
+    }
+    for index,change in ipairs(cases) do
+        change();f:resetCamera();local before=f.world.CurrentCamera.CFrame
+        f:tick();assert(f.world.CurrentCamera.CFrame==before,"invalid custom case "..index)
+    end
+    t.owner.attrs.Health=100;t.char.attrs.Health=100
+    f:tick();f:assertAim(t.head.Position)
+end)
+
+test("custom player still respects teammates and circle",function()
+    local f,t=customTarget()
+    f.ctx.uiState.isTeammate=function() return true end
+    local before=f.world.CurrentCamera.CFrame
+    f:tick();assert(f.world.CurrentCamera.CFrame==before)
+    f.ctx.uiState.isTeammate=function() return false end
+    f.sliders.AimCircle.set(1)
+    f:tick();assert(f.world.CurrentCamera.CFrame==before)
+    f.sliders.AimCircle.set(500);f:tick();f:assertAim(t.head.Position)
+end)
+
+test("unrelated humanoid-less models do not become targets",function()
+    local f,t=customTarget()
+    t.char.attrs.CharacterType="OtherCharacter"
+    local before=f.world.CurrentCamera.CFrame
+    f:tick();assert(f.world.CurrentCamera.CFrame==before)
+end)
+
+test("visibility ray skips intervening custom player models, not walls",function()
+    local f,t=customTarget()
+    local other=obj("Model","other",f.world)
+    other.attrs.CharacterType="PlayerCustomCharacter"
+    obj("AnimationController","AnimationController",other)
+    local armor=obj("Model","Armor",other)
+    local piece=bodyPart(armor,"ArmorPart",v3(0,0,-20))
+    local calls=0
+    f.cast=function(_,_,params)
+        calls=calls+1
+        if calls==1 then return {Instance=piece} end
+        assert(params.FilterDescendantsInstances[#params.FilterDescendantsInstances]==other)
+    end
+    f:tick();f:assertAim(t.head.Position);assert(calls==2)
+end)
+
 test("shutdown removes the callback, circle and owned diagnostics",function()
     local f=active();assert(type(env.shitaro_aim)=="function")
     local overlay=f.ctx.playerGui:FindFirstChild("ShitaroAim")

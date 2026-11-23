@@ -203,6 +203,49 @@ xpcall(function()
         return humanoid
     end
 
+    -- Block Strike's observed player rigs have an AnimationController rather
+    -- than a Humanoid. Only accept this specifically identified custom rig for
+    -- actual Player.Character targets; the NPC scanner stays Humanoid-based.
+    -- The game also parks stale models outside Workspace for PVS culling.
+    local function isLivingPlayer(target, char)
+        if not char or not char:IsDescendantOf(Workspace) then
+            return false
+        end
+
+        local humanoid = isAlive(char)
+        if humanoid then
+            return true, humanoid
+        end
+
+        if char:FindFirstChildOfClass("Humanoid")
+            or char:GetAttribute("CharacterType") ~= "PlayerCustomCharacter"
+            or not char:FindFirstChildOfClass("AnimationController")
+            or char:GetAttribute("ClientCharacterPresentationVisible") == false then
+            return false
+        end
+
+        local ownerId = char:GetAttribute("PresentationOwnerUserId")
+        if type(ownerId) == "number" and ownerId ~= target.UserId then
+            return false
+        end
+
+        local knownHealth = false
+        for _, item in ipairs({ target, char }) do
+            local hp = item:GetAttribute("Health")
+            if type(hp) == "number" then
+                knownHealth = true
+                if hp <= 0 then return false end
+            end
+            if item:GetAttribute("Dead") == true
+                or item:GetAttribute("IsDead") == true
+                or item:GetAttribute("Alive") == false
+                or item:GetAttribute("IsAlive") == false then
+                return false
+            end
+        end
+        return knownHealth, nil
+    end
+
     local function part(char, name)
         local found = char:FindFirstChild(name)
         return found and found:IsA("BasePart") and found or nil
@@ -320,9 +363,15 @@ xpcall(function()
             end
 
             local model = piece:FindFirstAncestorOfClass("Model")
+            local character = model
+            while character and not character:FindFirstChildOfClass("Humanoid")
+                and not (character:GetAttribute("CharacterType") == "PlayerCustomCharacter"
+                    and character:FindFirstChildOfClass("AnimationController")) do
+                character = character:FindFirstAncestorOfClass("Model")
+            end
 
-            if model and model:FindFirstChildOfClass("Humanoid") then
-                filter[#filter + 1] = model
+            if character then
+                filter[#filter + 1] = character
             elseif piece.Transparency >= 0.9 then
                 filter[#filter + 1] = piece
             else
@@ -743,10 +792,9 @@ xpcall(function()
             if target ~= player and not (cfg.ignoreTeam and isTeammate(target)) then
                 local char = target.Character
 
-                if char and char.Parent then
-                    local humanoid = isAlive(char)
-
-                    if humanoid then
+                if char then
+                    local alive, humanoid = isLivingPlayer(target, char)
+                    if alive then
                         consider(target, char, humanoid, target)
                     end
                 end
@@ -848,7 +896,16 @@ xpcall(function()
             local body = target.Character
             local humanoid = body and body:FindFirstChildOfClass("Humanoid")
 
-            if body and humanoid then
+            if body and not humanoid then
+                local alive = isLivingPlayer(target, body)
+                local point = aimPoint(parts(body), cfg.part)
+                local screen = point and cam:WorldToViewportPoint(point)
+                local off = screen and string.format("%.0fpx", (Vector2.new(screen.X, screen.Y) - cam.ViewportSize * 0.5).Magnitude) or "-"
+                warn(string.format("[shitaro/aim] %s | custom=true | eligible=%s | inWorkspace=%s | visibleAttr=%s | health=%s | teammate=%s | off=%s",
+                    target.Name, tostring(alive), tostring(body:IsDescendantOf(Workspace)),
+                    tostring(body:GetAttribute("ClientCharacterPresentationVisible")),
+                    tostring(target:GetAttribute("Health")), tostring(cfg.ignoreTeam and isTeammate(target)), off))
+            elseif body and humanoid then
                 local point = aimPoint(parts(body), cfg.part)
                 local meters = point
                     and (point - origin).Magnitude * STUDS_TO_M
