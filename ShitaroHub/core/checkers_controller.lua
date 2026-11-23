@@ -10,7 +10,7 @@ return function(engine, adapter)
     local function status(text) c.status=text;if adapter.changed then adapter.changed(c) end end
     local function clearGuide()
         if adapter.clearGuide then pcall(adapter.clearGuide) end
-        s.manualAssist=false;s.guideAt=nil
+        s.manualAssist=false;s.guideAt=nil;s.virtualRetryAt=nil
     end
     local function clearRound()
         clearGuide()
@@ -110,6 +110,7 @@ return function(engine, adapter)
                 s.board[vr][vc]=nil
             end
             s.board[r][col]=nil;s.board[b][d]=p
+            s.moveVirtualAt=nil
             if f==true then p.king=true end
             if s.phase=="move" then
                 local step=s.plan and s.plan.steps[s.stepIndex]
@@ -205,6 +206,7 @@ return function(engine, adapter)
             return
         end
         if not s.turn or not s.board then return end
+        if s.deadline and now()>=s.deadline-0.5 then halt("время хода закончилось") return end
         if s.phase and now()>(s.phaseUntil or 0) then
             local labels={selectReady="шашка недоступна для нажатия",select="нет подтверждения выбора шашки",
                 cell="клетка недоступна для нажатия",move="нет подтверждения хода",
@@ -215,6 +217,7 @@ return function(engine, adapter)
             local expectedState,expectedId=s,s.planId
             local function selectionStillPending()
                 return c.running and s==expectedState and s.turn and s.phase=="select" and s.planId==expectedId
+                    and (not s.deadline or now()<s.deadline-0.5)
             end
             if not s.alternateTried then
                 s.alternateTried=true
@@ -235,11 +238,27 @@ return function(engine, adapter)
                     local attempted=adapter.retryPiece(expectedId,selectionStillPending)
                     if not c.running or s~=expectedState then return end
                     trace("SELECT_RETRY_RESULT",tostring(attempted))
-                    if selectionStillPending() then s.guideAt=now()+(attempted==true and 1.2 or 0) end
+                    if selectionStillPending() then s.virtualRetryAt=now()+2 end
                 else
                     trace("SELECT_RETRY","физический клик недоступен");s.guideAt=now()
                 end
             end
+        end
+        if s.phase=="select" and s.virtualRetryAt and now()>=s.virtualRetryAt then
+            s.virtualRetryAt=nil
+            local expectedState,expectedId=s,s.planId
+            local function selectionStillPending()
+                return c.running and s==expectedState and s.turn and s.phase=="select" and s.planId==expectedId
+                    and (not s.deadline or now()<s.deadline-0.5)
+            end
+            local attempted=false
+            if adapter.retryPiece and selectionStillPending() then
+                trace("SELECT_VIRTUAL_RETRY","виртуальный указатель по "..tostring(expectedId))
+                attempted=adapter.retryPiece(expectedId,selectionStillPending,"virtual")
+                if not c.running or s~=expectedState then return end
+                trace("SELECT_VIRTUAL_RESULT",tostring(attempted))
+            end
+            if selectionStillPending() then s.guideAt=now()+(attempted==true and 1.2 or 0) end
         end
         if s.phase=="select" and s.guideAt and now()>=s.guideAt and not s.manualAssist then
             s.guideAt=nil
@@ -264,13 +283,29 @@ return function(engine, adapter)
             local step=expectedPlan and expectedPlan.steps[expectedIndex]
             local function moveStillPending()
                 return c.running and s==expectedState and s.turn and s.phase=="move"
-                    and s.plan==expectedPlan and s.stepIndex==expectedIndex
+                    and (not s.deadline or now()<s.deadline-0.5) and s.plan==expectedPlan and s.stepIndex==expectedIndex
             end
             if step and adapter.retryCell then
                 trace("CELL_RETRY",step.r..","..step.c)
                 local attempted=adapter.retryCell(step.r,step.c,moveStillPending)
                 if not c.running or s~=expectedState then return end
                 trace("CELL_RETRY_RESULT",tostring(attempted))
+                if moveStillPending() then s.moveVirtualAt=now()+2 end
+            end
+        end
+        if s.phase=="move" and s.moveVirtualAt and now()>=s.moveVirtualAt then
+            s.moveVirtualAt=nil
+            local expectedState,expectedPlan,expectedIndex=s,s.plan,s.stepIndex
+            local step=expectedPlan and expectedPlan.steps[expectedIndex]
+            local function moveStillPending()
+                return c.running and s==expectedState and s.turn and s.phase=="move"
+                    and (not s.deadline or now()<s.deadline-0.5) and s.plan==expectedPlan and s.stepIndex==expectedIndex
+            end
+            if step and adapter.retryCell and moveStillPending() then
+                trace("CELL_VIRTUAL_RETRY",step.r..","..step.c)
+                local attempted=adapter.retryCell(step.r,step.c,moveStillPending,"virtual")
+                if not c.running or s~=expectedState then return end
+                trace("CELL_VIRTUAL_RESULT",tostring(attempted))
             end
         end
         if not s.phase then
@@ -287,7 +322,7 @@ return function(engine, adapter)
             if result~=nil then trace("SELECT_ATTEMPT",tostring(s.planId).." result="..tostring(result)) end
             if result==nil and s.phase=="select" then s.phase="selectReady"
             elseif result==false then halt("не удалось выбрать шашку")
-            elseif result==true and s.phase=="select" then s.phaseUntil=now()+7.5;s.retryAt=now()+2 end
+            elseif result==true and s.phase=="select" then s.phaseUntil=now()+9;s.retryAt=now()+2 end
         elseif s.phase=="cell" then
             local step=s.plan.steps[s.stepIndex]
             local waitUntil=s.phaseUntil
@@ -297,7 +332,7 @@ return function(engine, adapter)
             if result==nil and s.phase=="move" then s.phase="cell";s.phaseUntil=waitUntil
             elseif result==false then halt("не удалось нажать клетку")
             elseif result==true and s.phase=="move" then
-                s.phaseUntil=now()+7.5;s.moveRetryAt=now()+2;s.moveRetried=false
+                s.phaseUntil=now()+9;s.moveRetryAt=now()+2;s.moveRetried=false;s.moveVirtualAt=nil
             end
         end
     end

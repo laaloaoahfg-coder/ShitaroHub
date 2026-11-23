@@ -98,8 +98,38 @@ local still=true;local frameBeforeCancel=frames
 waitHook=function() if frames==frameBeforeCancel+2 then still=false end end
 assert(not pointer(200,150,"mouse",b,function() return still end))
 waitHook=nil;assert(mouseClicks==1 and #mouseMoves==4 and mouseMoves[4][1]==25 and gui.Enabled)
+-- For 3D input, compare the engine's actual Mouse.Target after moving.
+local actualTarget,plannedPart={},{}
+env.player={GetMouse=function() return {Target=actualTarget} end}
+services.VirtualInputManager=vim;overlays={}
+local moves={}
+function vim:SendMouseMoveEvent(x,y) moves[#moves+1]={x,y} end
+local beforeVirtual=#clicks
+assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart),"wrong engine target must not receive virtual click")
+assert(#clicks==beforeVirtual and #moves==2 and moves[2][1]==25 and gui.Enabled,"wrong target restores cursor and hub")
+actualTarget=nil
+assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart),"nil engine target must not receive click")
+assert(#clicks==beforeVirtual)
+actualTarget=plannedPart
+assert(pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart),"matching target may receive virtual click")
+assert(#clicks==beforeVirtual+2 and clicks[#clicks-1].down and not clicks[#clicks].down,"virtual pointer press and release")
+local beforeMouseClicks=mouseClicks
+actualTarget={}
+assert(not pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart))
+assert(mouseClicks==beforeMouseClicks and gui.Enabled,"wrong mouse target never clicked")
+-- Stop before the actual press cancels virtual input, restores the cursor.
+actualTarget=plannedPart;local beforeCancelClicks=#clicks;local cancelFrame=frames
+waitHook=function() if frames==cancelFrame+2 then env.controller.running=false end end
+assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart))
+waitHook=nil;env.controller.running=true;assert(#clicks==beforeCancelClicks and gui.Enabled)
+-- If Stop arrives after the virtual button-down, the button is still released.
+actualTarget=plannedPart;local beforeHeld=#clicks;local heldFrame=frames
+waitHook=function() if frames==heldFrame+3 then env.controller.running=false end end
+assert(pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart))
+waitHook=nil;assert(#clicks==beforeHeld+2 and clicks[#clicks-1].down and not clicks[#clicks].down and gui.Enabled,"virtual button releases after Stop")
+env.controller.running=true
 -- Exercise the real alternate-detector selection logic separately.
-local alternate=section("function adapter.retryDetector(id)","function adapter.retryPiece(id,stillPending)")
+local alternate=section("function adapter.retryDetector(id)","function adapter.retryPiece(id,stillPending,method)")
 local hitDet,rootDet={},{}
 local hitbox={FindFirstChildOfClass=function() return hitDet end}
 local detPart={FindFirstChild=function() return hitbox end,FindFirstChildOfClass=function() return rootDet end}
@@ -152,6 +182,8 @@ assert(not retryAdapter.retryPiece("Piece2_1") and count==0,"occluded piece must
 assert(logs[#logs]=="RETRY_GUARD:raycast_other_object")
 hit=piece;assert(retryAdapter.retryPiece("Piece2_1") and count==1,"visible piece may get one retry")
 assert(selectedMethod=="touch" and lastX==200 and lastY==150 and lastGuiPoint.Y==114,"viewport input differs from inset-relative GUI hit test")
+assert(retryAdapter.retryPiece("Piece2_1",function() return true end,"virtual") and selectedMethod=="vim3d","explicit virtual retry uses the virtual pointer path")
+count=count-1
 -- If touch could not even start, fall back to the mouse; no second method is
 -- attempted after a touch start reported success.
 local methodOrder={}

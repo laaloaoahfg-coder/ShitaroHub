@@ -231,8 +231,30 @@ local function guiHitSafe(x,y,expected)
     if expected and not found then log("INPUT_GUARD","button not at intended point");return false end
     return true
 end
+-- Mouse.Target is the engine's own current pointer target; unlike a separate
+-- workspace raycast, it can reveal that executor mouse movement was ignored.
+-- Never log arbitrary world object names or player identifiers.
+local function observedMouseTarget(expectedPart,method)
+    if not expectedPart then return true end
+    local ok,target=pcall(function() return player:GetMouse().Target end)
+    if not ok then log("POINTER_TARGET",method.." unavailable");return true end
+    if not target then log("POINTER_TARGET",method.." none");return false end
+    if target==expectedPart or safeDescendant(target,expectedPart) then
+        log("POINTER_TARGET",method.." expected");return true
+    end
+    local role="other"
+    local functional=model and model:FindFirstChild("Functional")
+    local box=functional and functional:FindFirstChild("Box")
+    local board=model and model:FindFirstChild("Board")
+    local pieces=model and model:FindFirstChild("Pieces")
+    if target==box then role="functional_box"
+    elseif board and safeDescendant(target,board) then role="board"
+    elseif pieces and safeDescendant(target,pieces) then role="other_piece" end
+    log("POINTER_TARGET",method.." "..role)
+    return false
+end
 local inputBusy=false
-local function pointerClick(x,y,method,expected,stillPending,guiPoint)
+local function pointerClick(x,y,method,expected,stillPending,guiPoint,targetPart)
     if inputBusy or not controller or not controller.running then return false end
     local camera=Workspace.CurrentCamera
     if not camera or type(x)~="number" or type(y)~="number" then return false end
@@ -282,6 +304,7 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint)
                 RunService.RenderStepped:Wait()
                 local stillReady=ready()
                 if stillReady~=true then return stillReady end
+                if not observedMouseTarget(targetPart,"mouse") then return false end
                 local didClick
                 if type(mouse1click)=="function" then didClick=pcall(mouse1click)
                 else
@@ -298,6 +321,26 @@ local function pointerClick(x,y,method,expected,stillPending,guiPoint)
         end
         local got,vim=pcall(function() return game:GetService("VirtualInputManager") end)
         if not got or not vim then return false end
+        if method=="vim3d" then
+            local gotOld,old=pcall(function() return UserInputService:GetMouseLocation() end)
+            local worked,attempted=pcall(function()
+                local moved=pcall(function() vim:SendMouseMoveEvent(x,y,game) end)
+                log("INPUT","virtual pointer move="..tostring(moved))
+                if not moved then return false end
+                RunService.RenderStepped:Wait()
+                local stillReady=ready()
+                if stillReady~=true then return stillReady end
+                if not observedMouseTarget(targetPart,"virtual") then return false end
+                local down=pcall(function() vim:SendMouseButtonEvent(x,y,0,true,game,0) end)
+                if down then pcall(function() RunService.RenderStepped:Wait() end) end
+                local up=pcall(function() vim:SendMouseButtonEvent(x,y,0,false,game,0) end)
+                log("INPUT","virtual 3D click down="..tostring(down).." up="..tostring(up))
+                return down
+            end)
+            if gotOld and old then pcall(function() vim:SendMouseMoveEvent(old.X,old.Y,game) end) end
+            if not worked then log("INPUT","virtual pointer error");return false end
+            return attempted
+        end
         local down=pcall(function() vim:SendMouseButtonEvent(x,y,0,true,game,0) end)
         if down then pcall(function() RunService.RenderStepped:Wait() end) end
         -- Always release after a down, even if Stop arrived while waiting.
@@ -425,6 +468,7 @@ local function pieceFor(id)
     if part and part:IsA("BasePart") then return part end
 end
 local guideHighlight
+local guideInputCount=0
 function adapter.clearGuide()
     if guideHighlight then pcall(function() guideHighlight:Destroy() end);guideHighlight=nil end
 end
@@ -448,7 +492,22 @@ function adapter.showGuide(id)
         if highlight then pcall(function() highlight:Destroy() end) end
         log("GUIDE","highlight unavailable");return false
     end
-    guideHighlight=highlight;log("GUIDE","highlight created for planned piece");return true
+    guideHighlight=highlight;guideInputCount=0;log("GUIDE","highlight created for planned piece");return true
+end
+-- Passive diagnostic only during the manual guide. It does not consume input,
+-- record coordinates, keys, chat or object/player names, or send any action.
+local gotGuideInput,guideInput=pcall(function() return UserInputService.InputBegan end)
+if gotGuideInput and guideInput then
+    connect(guideInput,function(input,processed)
+        if not guideHighlight or not controller or not controller.running then return end
+        local kind
+        if input.UserInputType==Enum.UserInputType.MouseButton1 then kind="mouse"
+        elseif input.UserInputType==Enum.UserInputType.Touch then kind="touch" end
+        if not kind or guideInputCount>=8 then return end
+        guideInputCount=guideInputCount+1
+        log("GUIDE_INPUT",kind.." processed="..tostring(processed==true))
+        if kind=="mouse" then observedMouseTarget(guideHighlight.Adornee,"guide") end
+    end)
 end
 function adapter.selectPiece(id)
     local part=pieceFor(id)
@@ -476,7 +535,7 @@ function adapter.retryDetector(id)
 end
 -- WorldToViewportPoint matches physical mouse/touch screen coordinates;
 -- WorldToScreenPoint accounts for GUI inset and is used ONLY for GUI hit test.
-local function retryVisible(part,stillCurrent,stillPending)
+local function retryVisible(part,stillCurrent,stillPending,method)
     local camera=Workspace.CurrentCamera
     if not part or not camera then log("RETRY_GUARD","target or camera missing");return false end
     local offsets={{0,0,0},{0,0.34,0},{0.24,0.25,0},{-0.24,0.25,0},{0,0.25,0.24},{0,0.25,-0.24}}
@@ -546,26 +605,29 @@ local function retryVisible(part,stillCurrent,stillPending)
     end
     local x,y=point.viewport.X,point.viewport.Y
     log("RETRY_COORDS",string.format("viewport=%.1f,%.1f gui=%.1f,%.1f touch=%s",x,y,point.gui.X,point.gui.Y,tostring(UserInputService.TouchEnabled)))
+    if method=="virtual" then
+        return pointerClick(x,y,"vim3d",nil,valid,point.gui,part)
+    end
     if UserInputService.TouchEnabled then
-        if pointerClick(x,y,"touch",nil,valid,point.gui) then return true end
+        if pointerClick(x,y,"touch",nil,valid,point.gui,part) then return true end
         if stillPending and not stillPending() then return false end
     end
-    if pointerClick(x,y,"mouse",nil,valid,point.gui) then return true end
+    if pointerClick(x,y,"mouse",nil,valid,point.gui,part) then return true end
     if stillPending and not stillPending() then return false end
-    return pointerClick(x,y,"vim",nil,valid,point.gui)
+    return false
 end
-function adapter.retryPiece(id,stillPending)
+function adapter.retryPiece(id,stillPending,method)
     local part=pieceFor(id)
-    return retryVisible(part,function() return pieceFor(id)==part end,stillPending)
+    return retryVisible(part,function() return pieceFor(id)==part end,stillPending,method)
 end
-function adapter.retryCell(row,col,stillPending)
+function adapter.retryCell(row,col,stillPending,method)
     local part=cells and cells[row] and cells[row][col]
     if not part or not part.Parent or part.Name~="Move" or not adapter.isSeated() then
         log("RETRY_GUARD","confirmed cell unavailable");return false
     end
     return retryVisible(part,function()
         return adapter.isSeated() and cells and cells[row] and cells[row][col]==part and part.Parent and part.Name=="Move"
-    end,stillPending)
+    end,stillPending,method)
 end
 function adapter.clickCell(row,col)
     if not model or not cells or not adapter.isSeated() then return false end

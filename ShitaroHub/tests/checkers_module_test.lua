@@ -40,7 +40,7 @@ function typeof(x) return getmetatable(x)==O and "Instance" or type(x) end
 UDim2={fromOffset=function(...) return {...} end,fromScale=function(...) return {...} end,new=function(...) return {...} end}
 UDim={new=function(...) return {...} end}
 Color3={fromRGB=function(...) return {...} end}
-Enum={TextXAlignment={Center=1},HighlightDepthMode={AlwaysOnTop=1},ApplyStrokeMode={Border=1}}
+Enum={TextXAlignment={Center=1},HighlightDepthMode={AlwaysOnTop=1},ApplyStrokeMode={Border=1},UserInputType={MouseButton1=1,Touch=2}}
 Vector2={new=function(...) return {...} end}
 local originalClock,originalInstance=os.clock,Instance
 local mockTime=0;os.clock=function() return mockTime end
@@ -87,7 +87,7 @@ local activeGui=new("ScreenGui","ShitaroMenuOnly",pg)
 local window=new("Frame","Menu",activeGui,{Visible=true})
 local page=new("Frame","checkers",window)
 local players={LocalPlayer=localPlayer}
-local services={Workspace=world,ReplicatedStorage=rep,HttpService={},UserInputService={},RunService={RenderStepped={Wait=function() end}}}
+local services={Workspace=world,ReplicatedStorage=rep,HttpService={},UserInputService={InputBegan=signal()},RunService={RenderStepped={Wait=function() end}}}
 game={PlaceId=75526590957446};function game:GetService(n) return assert(services[n]) end
 local clicks,voteCalls={},0
 function fireclickdetector(d) clicks[#clicks+1]=d end
@@ -177,9 +177,11 @@ start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
 votes.OnClientEvent:Fire("Result","Classic",true);remote.OnClientEvent:Fire("GameStarted")
 remote.OnClientEvent:Fire("TurnChanged",localPlayer,{});remote.OnClientEvent:Fire("YourTurn",35)
 step();step();step();local guided=clicks[#clicks].Parent.Parent.Name
-for i=1,10 do step() end
+for i=1,19 do step() end
 local mark=assert(highlights[#highlights],"failed automatic selection creates a visual guide")
 assert(mark.Adornee.Name==guided and mark.Parent==mark.Adornee and hudStatus.Text=="Нажмите подсвеченную шашку")
+services.UserInputService.InputBegan:Fire({UserInputType=Enum.UserInputType.MouseButton1},false)
+hudCopy.Activated:Fire();assert(clipboard:find("GUIDE_INPUT mouse processed=false",1,true),"manual pointer observation is recorded without blocking")
 local guidedOptions={}
 for _,m in ipairs(e.moves(initial,2,"Classic")) do
     if initial[m.r][m.c].id==guided then

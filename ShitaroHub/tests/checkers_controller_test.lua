@@ -28,7 +28,7 @@ c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("G
 local before=cells;c.event("PieceSelected","own",{{row=8,col=8,isCapture=true}});c.tick()
 assert(not c.running and cells==before,"server legal moves must match plan")
 -- Timeout must not repeatedly send clicks.
-c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+8;c.tick()
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+10;c.tick()
 assert(not c.running and cells==before,"missing acknowledgement must halt")
 -- A different selection while ours is pending must not result in a tile click.
 c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
@@ -80,9 +80,9 @@ c.vote("Voted",42,"American");assert(c.status:find("подтверждён",1,tr
 c.vote("Result","Classic");time=time+2;c.tick();assert(c.status:find("Classic",1,true),"final result must stay displayed while awaiting game")
 c.stop()
 -- A distinct detector gets one try; physical input waits, and an ack cancels it.
-local alt,physical=0,0
+local alt,physical=0,0;local physicalMethods={}
 a.retryDetector=function() alt=alt+1;return true end
-a.retryPiece=function() physical=physical+1;return true end
+a.retryPiece=function(_,_,method) physical=physical+1;physicalMethods[#physicalMethods+1]=method or "first";return true end
 c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
 local tilesBefore=cells;time=time+2;c.tick();assert(alt==1 and physical==0 and cells==tilesBefore,"alternate detector only, no blind destination")
 time=time+1;c.tick();assert(alt==1 and physical==0,"wait for detector acknowledgement")
@@ -92,8 +92,23 @@ c.stop()
 -- If alternate detector doesn't confirm, physical retry is sent once and timeout halts.
 c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
 time=time+2;c.tick();time=time+2;c.tick();c.tick();assert(alt==2 and physical==1,"retry methods must be staged and limited")
+time=time+2;c.tick();assert(physical==2 and physicalMethods[2]=="virtual","virtual pointer retried only after the wait")
 time=time+4;c.tick();assert(not c.running and cells==tilesBefore+1,"no confirmation means halt without extra cell")
 a.retryDetector=nil
+-- Late selection acknowledgment cancels a scheduled virtual retry, including
+-- after the opponent's turn has begun and a new plan is chosen.
+local virtualCalls,firstCalls=0,0
+a.retryDetector=nil
+a.retryPiece=function(_,_,method)
+    if method=="virtual" then virtualCalls=virtualCalls+1 else firstCalls=firstCalls+1 end
+    return true
+end
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
+time=time+2;c.tick();assert(firstCalls==1 and virtualCalls==0)
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}})
+time=time+1.5;c.event("TurnChanged","foe");c.event("TurnChanged","me");c.tick();c.tick()
+time=time+0.6;c.tick();assert(virtualCalls==0 and firstCalls==1,"prior selection cannot trigger retry for a new plan")
+c.stop();time=time+5;c.tick();assert(virtualCalls==0,"stop cancels pending virtual retry")
 -- Only a server-confirmed destination may receive a physical retry.
 local cellRetries=0
 a.retryCell=function(r,col,pending)
@@ -116,14 +131,25 @@ end
 c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
 c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick();time=time+2;c.tick();c.tick()
 assert(cellRetries==2 and c.running,"ack inside retry leaves no pending duplicate");c.stop()
-a.retryCell=nil
+-- The confirmed destination may get one virtual retry after the first
+-- physical attempt, but never another destination or another click after ack.
+local cellMethods={}
+a.retryCell=function(r,col,pending,method)
+    assert(r==5 and col==4 and pending());cellMethods[#cellMethods+1]=method or "first";return true
+end
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick()
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick()
+time=time+2;c.tick();assert(#cellMethods==1 and cellMethods[1]=="first")
+time=time+2;c.tick();assert(#cellMethods==2 and cellMethods[2]=="virtual")
+c.event("PieceMoved","own",5,4,"foe1",false);time=time+3;c.tick();assert(#cellMethods==2,"move ack cancels cell retries")
+c.stop();a.retryCell=nil
 -- If automation can't select, guide only the planned piece for a bounded time.
 local guides,clears=0,0
 a.showGuide=function(id) assert(id=="own");guides=guides+1;return true end
 a.clearGuide=function() clears=clears+1 end
 a.retryPiece=function() return false end
 c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.event("YourTurn",35)
-c.tick();c.tick();c.tick();local beforeGuideCells=cells;time=time+2;c.tick()
+c.tick();c.tick();c.tick();local beforeGuideCells=cells;time=time+2;c.tick();time=time+2;c.tick()
 assert(guides==1 and c.status=="Нажмите подсвеченную шашку" and cells==beforeGuideCells,"manual guide is shown only after retry fails")
 time=time+6;c.tick();assert(c.running and guides==1 and cells==beforeGuideCells,"bounded guide does not repeat clicks")
 local beforeClear=clears
@@ -131,14 +157,14 @@ c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});assert(clears>befo
 c.tick();assert(cells==beforeGuideCells+1,"confirmed manual selection may proceed to the planned destination")
 c.stop()
 -- Wrong manual selection and Stop both remove guides and never guess a cell.
-c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+2;c.tick()
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+2;c.tick();time=time+2;c.tick()
 beforeClear=clears;local beforeWrong=cells;c.event("PieceSelected","other",{{row=5,col=4,isCapture=true}})
 assert(not c.running and clears>beforeClear and cells==beforeWrong,"wrong selection halts and removes guide")
-c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+2;c.tick()
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();time=time+2;c.tick();time=time+2;c.tick()
 beforeClear=clears;c.stop();assert(clears>beforeClear,"stop clears guide")
 -- The guide cannot extend automation past the server turn deadline.
 c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.event("YourTurn",6)
-c.tick();c.tick();c.tick();time=time+2;c.tick();time=time+4;c.tick();assert(not c.running,"guide stops at turn deadline")
+c.tick();c.tick();c.tick();time=time+2;c.tick();time=time+2;c.tick();time=time+2;c.tick();assert(not c.running,"guide stops at turn deadline")
 a.showGuide=nil;a.clearGuide=nil
 -- A vote handler that yields may resume after Stop and a new Start.
 a.vote=function(_,_,pending)
