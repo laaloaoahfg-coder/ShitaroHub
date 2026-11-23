@@ -315,3 +315,93 @@ printed = false
 for _, message in ipairs(messages) do if message == report then printed = true end end
 assert(printed)
 nativePrint("PASS: bounded binary samples (hex, truncation, listener cleanup, fallbacks)")
+
+-- Track ALL received packets after correlating a spawn to a world model.
+-- This synthetic buffer does not contain data from the user's game.
+remote.ClassName = "RemoteEvent"
+target.UserId = 9876543211
+target.Character = enemy
+enemy.Parent = workspace
+enemy.attrs.ClientCharacterPresentationVisible = true
+enemyRoot.Position = vec(10, 2, 0)
+local function encodeVarint(n)
+    local out={}
+    repeat
+        local b=n%128;n=math.floor(n/128)
+        out[#out+1]=string.char(b+(n>0 and 128 or 0))
+    until n==0
+    return table.concat(out)
+end
+local function packBuffer(raw)
+    local bytes={}
+    for i=1,#raw do bytes[i]=string.byte(raw,i) end
+    return setmetatable({bytes=bytes},fakeBufferMeta)
+end
+function buffer.tostring(value)
+    local out={}
+    for i,b in ipairs(value.bytes) do out[i]=string.char(b) end
+    return table.concat(out)
+end
+function buffer.readf32(value, offset)
+    return (string.unpack("<f",buffer.tostring(value),offset+1))
+end
+local entity=string.char(0xe6,0x25)
+local spawn=packBuffer(string.char(6,1)..string.rep("\0",27)..encodeVarint(target.UserId)..entity..string.char(9)..string.pack("<fff",10,2,0)..string.rep("\0",6))
+local delta=packBuffer(string.char(6,1)..string.rep("\0",27)..entity..string.char(3)..string.rep("\0",12))
+local tickCount=0
+function task.wait()
+    tickCount=tickCount+1
+    if tickCount == 1 then listener(spawn) else
+        if tickCount == 3 then enemy.Parent=culled;enemy.attrs.ClientCharacterPresentationVisible=false end
+        listener(delta)
+    end
+end
+writefile = function(path,data) files[path]=data end
+setclipboard = function(data) clipboard=data end
+clipboard,disconnected=nil,false
+dofile("diagnostics/block_strike_tracking.lua")
+report=assert(env.ShitaroBlockStrikeTrackingReport)
+assert(report == clipboard and disconnected)
+assert(report:find("MAPPED",1,true) and report:find("name=Enemy userId=9876543211 entity_hex=e625",1,true))
+assert(report:find("MATCH",1,true) and report:find("phase=World entity_hex=e625",1,true))
+assert(report:find("phase=Hidden entity_hex=e625",1,true))
+assert(report:find("SUMMARY received=59 processedBuffers=59 acceptedPackets=59 errors=0",1,true))
+assert(report:find("hitsHidden=57/57",1,true))
+assert(report:find("HEURISTIC",1,true))
+local foundTrack=false
+for path,data in pairs(files) do
+    if path:match("block_strike_tracking_.*%.txt$") then assert(data==report);foundTrack=true end
+end
+assert(foundTrack)
+remote.ClassName="Folder"
+writefile=function() error("disk unavailable") end
+setclipboard=nil
+task.wait=function() end
+dofile("diagnostics/block_strike_tracking.lua")
+report=env.ShitaroBlockStrikeTrackingReport
+assert(report:find("RemoteSnapshot unavailable",1,true))
+printed=false
+for _, message in ipairs(messages) do if message==report then printed=true end end
+assert(printed)
+nativePrint("PASS: full-traffic identity mapping, world/hidden counts and fallbacks")
+
+-- A generation change must invalidate the previous short entity ID.
+remote.ClassName="RemoteEvent"
+target.Character=enemy;enemy.Parent=workspace;enemy.attrs.ClientCharacterPresentationVisible=true
+enemy.attrs.CharacterGeneration=10
+enemyRoot.Position=vec(10,2,0)
+tickCount=0
+function task.wait()
+    tickCount=tickCount+1
+    if tickCount==1 then listener(spawn) else
+        if tickCount==3 then enemy.attrs.CharacterGeneration=11 end
+        listener(delta)
+    end
+end
+writefile=function(path,data) files[path]=data end
+setclipboard=function(data) clipboard=data end
+dofile("diagnostics/block_strike_tracking.lua")
+report=env.ShitaroBlockStrikeTrackingReport
+assert(report:find("RESET",1,true) and report:find("name=Enemy reason=character_or_generation_changed",1,true))
+assert(report:match("RESULT name=Enemy userId=9876543211 mapped=no"))
+nativePrint("PASS: tracking forgets entity IDs when a player respawns")
