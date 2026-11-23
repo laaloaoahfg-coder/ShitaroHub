@@ -166,6 +166,42 @@ beforeClear=clears;c.stop();assert(clears>beforeClear,"stop clears guide")
 c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.event("YourTurn",6)
 c.tick();c.tick();c.tick();time=time+2;c.tick();time=time+2;c.tick();time=time+2;c.tick();assert(not c.running,"guide stops at turn deadline")
 a.showGuide=nil;a.clearGuide=nil
+-- If cell automation is not acknowledged, assist only the exact destination
+-- approved by PieceSelected / MustContinueCapture, and resume on PieceMoved.
+local cellGuides,cellClears={},0
+a.clearGuide=function() cellClears=cellClears+1 end
+a.showCellGuide=function(r,col) cellGuides[#cellGuides+1]={r,col};return true end
+a.retryCell=function() return false end
+a.retryPiece=function() return false end
+local function beginManualCell()
+    c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.event("YourTurn",35)
+    c.tick();c.tick();c.tick();c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick()
+    time=time+2;c.tick();time=time+2;c.tick()
+end
+beginManualCell()
+assert(#cellGuides==1 and cellGuides[1][1]==5 and cellGuides[1][2]==4 and c.activity()=="Нажмите подсвеченную клетку")
+time=time+6;c.tick();assert(c.running and #cellGuides==1,"manual cell waits without repeating input")
+local beforeManualClear=cellClears
+c.event("PieceMoved","own",5,4,"foe1",false)
+assert(c.running and cellClears>beforeManualClear,"manual move acknowledgment removes guide")
+c.event("MustContinueCapture","own",{{row=7,col=6,isCapture=true}});c.tick()
+time=time+2;c.tick();time=time+2;c.tick()
+assert(#cellGuides==2 and cellGuides[2][1]==7 and cellGuides[2][2]==6,"chain guide uses next server-confirmed jump")
+c.event("PieceMoved","own",7,6,"foe2",false);c.event("TurnChanged","foe");assert(c.running);c.stop()
+-- A different move or an early turn change cannot silently resume on a guessed board.
+beginManualCell();beforeManualClear=cellClears
+c.event("PieceMoved","own",4,1,nil,false)
+assert(not c.running and cellClears>beforeManualClear,"wrong manual move halts and clears guide")
+beginManualCell();beforeManualClear=cellClears;c.event("TurnChanged","foe")
+assert(not c.running and cellClears>beforeManualClear,"turn change before move ack halts and clears guide")
+beginManualCell();beforeManualClear=cellClears;c.stop();assert(cellClears>beforeManualClear)
+local guidesBefore=#cellGuides;time=time+15;c.tick();assert(#cellGuides==guidesBefore,"Stop cancels cell guide")
+-- Do not extend the manual wait beyond the server deadline.
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.event("YourTurn",8)
+c.tick();c.tick();c.tick();c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick()
+time=time+2;c.tick();time=time+2;c.tick();assert(c.running)
+time=time+4;c.tick();assert(not c.running,"manual cell assist stops at deadline")
+a.showCellGuide=nil;a.clearGuide=nil;a.retryCell=nil
 -- A vote handler that yields may resume after Stop and a new Start.
 a.vote=function(_,_,pending)
     assert(pending());c.stop();c.start();assert(not pending(),"old pending predicate must not match a new session")

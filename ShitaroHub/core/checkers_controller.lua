@@ -11,6 +11,7 @@ return function(engine, adapter)
     local function clearGuide()
         if adapter.clearGuide then pcall(adapter.clearGuide) end
         s.manualAssist=false;s.guideAt=nil;s.virtualRetryAt=nil
+        s.cellAssist=false;s.cellGuideAt=nil;s.moveVirtualAt=nil
     end
     local function clearRound()
         clearGuide()
@@ -92,6 +93,7 @@ return function(engine, adapter)
             status("Партия завершена: "..result)
             if adapter.onRound then pcall(adapter.onRound) end
         elseif action=="TurnChanged" and s.match then
+            if s.turn and s.phase=="move" then halt("ход не подтверждён до смены очереди") return end
             clearGuide()
             s.turn=adapter.isLocal(a);s.phase=nil;s.plan=nil;s.deadline=nil
             status(s.turn and "Наш ход" or "Ход соперника")
@@ -115,6 +117,7 @@ return function(engine, adapter)
             if s.phase=="move" then
                 local step=s.plan and s.plan.steps[s.stepIndex]
                 if not step or a~=s.planId or step.r~=b or step.c~=d then halt("сервер подтвердил другой ход") return end
+                clearGuide();status("Ход подтверждён")
                 s.stepIndex=s.stepIndex+1
                 s.phase=s.stepIndex<=#s.plan.steps and "continue" or "turn"
                 s.phaseUntil=now()+6
@@ -149,6 +152,7 @@ return function(engine, adapter)
         if not s.match then return c.status end
         if not s.turn then return "Жду ход соперника" end
         if s.phase=="select" and s.manualAssist then return "Нажмите подсвеченную шашку" end
+        if s.phase=="move" and s.cellAssist then return "Нажмите подсвеченную клетку" end
         local labels={selectReady="Выбираю шашку",select="Шашка найдена; жду ответ игры",
             cell="Готовлю нажатие клетки",move="Жду подтверждения хода",
             continue="Жду продолжение взятия",turn="Жду смену хода"}
@@ -291,6 +295,8 @@ return function(engine, adapter)
                 if not c.running or s~=expectedState then return end
                 trace("CELL_RETRY_RESULT",tostring(attempted))
                 if moveStillPending() then s.moveVirtualAt=now()+2 end
+            elseif moveStillPending() then
+                s.cellGuideAt=now()
             end
         end
         if s.phase=="move" and s.moveVirtualAt and now()>=s.moveVirtualAt then
@@ -306,6 +312,27 @@ return function(engine, adapter)
                 local attempted=adapter.retryCell(step.r,step.c,moveStillPending,"virtual")
                 if not c.running or s~=expectedState then return end
                 trace("CELL_VIRTUAL_RESULT",tostring(attempted))
+                if moveStillPending() then s.cellGuideAt=now()+(attempted==true and 1.2 or 0) end
+            end
+        end
+        if s.phase=="move" and s.cellGuideAt and now()>=s.cellGuideAt and not s.cellAssist then
+            s.cellGuideAt=nil
+            local expectedState,expectedPlan,expectedIndex=s,s.plan,s.stepIndex
+            local step=expectedPlan and expectedPlan.steps[expectedIndex]
+            local ok,shown=false,false
+            if step and adapter.showCellGuide then ok,shown=pcall(adapter.showCellGuide,step.r,step.c) end
+            if ok and shown and c.running and s==expectedState and s.turn and s.phase=="move"
+                and (not s.deadline or now()<s.deadline-0.5)
+                and s.plan==expectedPlan and s.stepIndex==expectedIndex then
+                s.cellAssist=true
+                local untilTime=math.max(s.phaseUntil or now(),now()+10)
+                if s.deadline then untilTime=math.min(untilTime,s.deadline-1) end
+                s.phaseUntil=untilTime
+                trace("CELL_MANUAL_GUIDE","ожидаю ручное нажатие "..step.r..","..step.c)
+                status("Нажмите подсвеченную клетку")
+            else
+                if ok and shown and adapter.clearGuide then pcall(adapter.clearGuide) end
+                trace("CELL_MANUAL_GUIDE","подсветка недоступна или действие отменено")
             end
         end
         if not s.phase then

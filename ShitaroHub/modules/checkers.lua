@@ -472,10 +472,9 @@ local guideInputCount=0
 function adapter.clearGuide()
     if guideHighlight then pcall(function() guideHighlight:Destroy() end);guideHighlight=nil end
 end
-function adapter.showGuide(id)
+local function showTargetGuide(part,kind)
     adapter.clearGuide()
-    local part=pieceFor(id)
-    if not part then log("GUIDE","piece unavailable");return false end
+    if not part then log("GUIDE",kind.." unavailable");return false end
     local highlight
     local ok=pcall(function()
         highlight=Instance.new("Highlight")
@@ -492,7 +491,17 @@ function adapter.showGuide(id)
         if highlight then pcall(function() highlight:Destroy() end) end
         log("GUIDE","highlight unavailable");return false
     end
-    guideHighlight=highlight;guideInputCount=0;log("GUIDE","highlight created for planned piece");return true
+    guideHighlight=highlight;guideInputCount=0;log("GUIDE","highlight created for "..kind);return true
+end
+function adapter.showGuide(id)
+    return showTargetGuide(pieceFor(id),"planned piece")
+end
+function adapter.showCellGuide(row,col)
+    local part=cells and cells[row] and cells[row][col]
+    if not adapter.isSeated() or not part or not part.Parent or part.Name~="Move" then
+        log("GUIDE","confirmed cell unavailable");return false
+    end
+    return showTargetGuide(part,"confirmed cell")
 end
 -- Passive diagnostic only during the manual guide. It does not consume input,
 -- record coordinates, keys, chat or object/player names, or send any action.
@@ -574,13 +583,14 @@ local function retryVisible(part,stillCurrent,stillPending,method)
                 local functional=model and model:FindFirstChild("Functional")
                 local box=functional and functional:FindFirstChild("Box")
                 local role=hit.Instance==box and "functional_box" or kind
+                local scope=model and safeDescendant(hit.Instance,model) and "table" or "outside_table"
                 local okInfo,transparency,canQuery,canCollide=pcall(function()
                     return hit.Instance.Transparency,hit.Instance.CanQuery,hit.Instance.CanCollide
                 end)
                 log("RETRY_HIT",role)
                 if okInfo then
                     local t=type(transparency)=="number" and string.format("%.2f",transparency) or "unknown"
-                    log("RETRY_OBSTACLE","role="..role.." transparency="..t.." canQuery="..tostring(canQuery).." canCollide="..tostring(canCollide))
+                    log("RETRY_OBSTACLE","role="..role.." scope="..scope.." transparency="..t.." canQuery="..tostring(canQuery).." canCollide="..tostring(canCollide))
                 end
             end
             return nil,"raycast_other_object"

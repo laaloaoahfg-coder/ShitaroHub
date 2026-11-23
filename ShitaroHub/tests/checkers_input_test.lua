@@ -155,6 +155,13 @@ assert(load(guideSource,"guide","t",guideEnv))()
 assert(guideAdapter.showGuide("Piece1_2") and guideObjects[1].Parent==guidePiece and guideObjects[1].Adornee==guidePiece)
 guideAdapter.clearGuide();assert(guideObjects[1].destroyed,"guide must be destroyed")
 guideEnv.pieceFor=function() return nil end;assert(not guideAdapter.showGuide("missing"),"do not mark missing piece")
+local guideCell={Name="Move",Parent={}}
+guideEnv.cells={[5]={[4]=guideCell}};guideAdapter.isSeated=function() return true end
+assert(guideAdapter.showCellGuide(5,4) and guideObjects[2].Adornee==guideCell,"highlight exact confirmed cell")
+guideAdapter.clearGuide();assert(guideObjects[2].destroyed)
+guideCell.Name="BlockMove";assert(not guideAdapter.showCellGuide(5,4),"inactive cell cannot be highlighted")
+guideCell.Name="Move";guideAdapter.isSeated=function() return false end
+assert(not guideAdapter.showCellGuide(5,4),"do not highlight after leaving the table")
 -- Test physical retry guard: visible, raycast-confirmed piece only.
 local retry=section("local function retryVisible(","function adapter.clickCell(row,col)")
 local V={};V.__index=V
