@@ -34,7 +34,7 @@ local env=setmetatable({adapter=adapter,playerGui=pg,gui=gui,controller={running
     game={GetService=function(_,name) return assert(services[name]) end},log=function() end,
     getconnections=function() return {{Enabled=true,Fire=function() connections=connections+1 end}} end,
 }, {__index=_G})
-local build=assert(load(votes.."\nreturn pointerClick,function() cursor3dUnsafe=false end", "input", "t", env))
+local build=assert(load(votes.."\nreturn pointerClick,function() cursor3dUnsafe={mouse=false,virtual=false} end", "input", "t", env))
 local pointer,resetCursor=build()
 local oldSize=b.AbsoluteSize;b.AbsoluteSize={X=0,Y=0}
 assert(adapter.vote("American",1)==nil and #clicks==0 and connections==0,"unlaid button must wait without input")
@@ -148,8 +148,8 @@ waitHook=function() if frames==heldMouseFrame+3 then env.controller.running=fals
 assert(pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart))
 waitHook=nil;assert(pressCount==1 and releaseCount==1 and gui.Enabled and not env.controller.running)
 env.controller.running=true;env.mouse1press=nil;env.mouse1release=nil
--- A bad executor coordinate mapping never presses, restores to an unreliable
--- position, retries by VIM, or hides the HUD. Reset only on a new session.
+-- A bad executor coordinate mapping never presses or restores to an
+-- unreliable position; an independent VIM path may still be verified.
 local previousMove=env.mousemoveabs;local mismatchMoves=0
 mousePosition={X=25,Y=30};actualTarget=plannedPart
 local beforeMismatch=mouseClicks
@@ -159,9 +159,19 @@ assert(not pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},
 assert(mismatchMoves==1 and mouseClicks==beforeMismatch and gui.Enabled,"mismatch skips click and unsafe restore")
 assert(table.concat(checkLog,"\n"):find("cursor position mismatch",1,true))
 local movesAfterMismatch=#moves
-assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart))
-assert(#moves==movesAfterMismatch and gui.Enabled,"mismatch disables later cursor moves this session")
+assert(pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart))
+assert(#moves==movesAfterMismatch+2 and gui.Enabled,"mouse mismatch does not disable independently verified virtual pointer")
+assert(not pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart) and mismatchMoves==1,"bad mouse backend stays disabled")
 resetCursor();env.mousemoveabs=previousMove;mousePosition={X=25,Y=30}
+-- A mismatched virtual pointer likewise must not poison the mouse backend.
+local oldVimMove=vim.SendMouseMoveEvent
+function vim:SendMouseMoveEvent() mousePosition={X=799,Y=599} end
+local oldVirtualClicks=#clicks
+assert(not pointer(200,150,"vim3d",nil,function() return true end,{X=200,Y=114},plannedPart))
+assert(#clicks==oldVirtualClicks,"incorrect virtual coordinate must never click")
+mousePosition={X=25,Y=30};vim.SendMouseMoveEvent=oldVimMove
+assert(pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart),"independent mouse remains eligible")
+resetCursor();mousePosition={X=25,Y=30};beforeMismatch=mouseClicks
 -- Invalid cursor origin is not restored or clicked.
 mousePosition={X=1e30,Y=1e30};local oldMoveCount=#mouseMoves
 assert(not pointer(200,150,"mouse",nil,function() return true end,{X=200,Y=114},plannedPart))
@@ -221,7 +231,7 @@ local retryEnv=setmetatable({adapter=retryAdapter,Workspace=world,player={Charac
     safeDescendant=function() return false end,pointerClick=function(x,y,method,expected,valid,guiPoint)
         assert(valid(),"target must still be valid");count=count+1;selectedMethod=method;lastGuiPoint=guiPoint;lastX=x;lastY=y;return true
     end,
-    RaycastParams={new=function() return {} end},Enum={RaycastFilterType={Exclude=1}},
+    RaycastParams={new=function() return {} end},Enum={RaycastFilterType={Exclude=1}},cursor3dUnsafe={mouse=false,virtual=false},
 },{__index=_G})
 local barrierSource=section("local function possibleBoardBarrier(obj)","-- WorldToViewportPoint")
 retryEnv.possibleBoardBarrier,retryEnv.possibleCountHelper=assert(load(barrierSource.."\nreturn possibleBoardBarrier,possibleCountHelper","barrier","t",retryEnv))()
@@ -241,11 +251,11 @@ end
 assert(retryAdapter.retryPiece("Piece2_1") and #methodOrder==2 and methodOrder[1]=="mouse" and methodOrder[2]=="touch")
 methodOrder={}
 retryEnv.pointerClick=function(x,y,method)
-    methodOrder[#methodOrder+1]=method;retryEnv.cursor3dUnsafe=true;return false
+    methodOrder[#methodOrder+1]=method;retryEnv.cursor3dUnsafe.mouse=true;return false
 end
 assert(not retryAdapter.retryPiece("Piece2_1") and #methodOrder==1 and methodOrder[1]=="mouse","bad cursor mapping suppresses touch fallback")
-assert(not retryAdapter.retryPiece("Piece2_1",nil,"virtual") and #methodOrder==1,"bad cursor mapping suppresses later virtual movement")
-retryEnv.cursor3dUnsafe=false
+assert(not retryAdapter.retryPiece("Piece2_1",nil,"virtual") and methodOrder[2]=="vim3d","independent virtual backend remains eligible")
+retryEnv.cursor3dUnsafe={mouse=false,virtual=false}
 retryEnv.pointerClick=function(x,y,method,expected,valid,guiPoint)
     assert(valid());count=count+1;selectedMethod=method;lastGuiPoint=guiPoint;lastX=x;lastY=y;return true
 end

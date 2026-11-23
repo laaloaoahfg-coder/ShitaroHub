@@ -212,6 +212,35 @@ c.tick();c.tick();c.tick();time=time+2;c.tick();time=time+2;c.tick()
 time=time+12;c.tick();assert(c.running and c.activity()=="Нажмите подсвеченную шашку","guide can use remaining turn")
 c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick();assert(c.running,"manual acknowledgment resumes")
 c.stop();a.showGuide=nil;a.clearGuide=nil
+-- User-select mode never sends a piece detector or cursor event. Only after
+-- the server confirms the planned selection do cell retries begin, with the
+-- independent virtual backend followed by the executor mouse backend.
+local manualPieceClicks,manualCellMethods,manualGuides=0,{},0
+a.manualSelection=true;a.preferVirtualCell=true
+a.selectPiece=function() manualPieceClicks=manualPieceClicks+1;return true end
+a.retryPiece=function() manualPieceClicks=manualPieceClicks+1;return true end
+a.retryDetector=function() manualPieceClicks=manualPieceClicks+1;return true end
+a.showGuide=function(id) assert(id=="own");manualGuides=manualGuides+1;return true end
+a.clearGuide=function() end
+a.retryCell=function(r,col,pending,method)
+    assert(r==5 and col==4 and pending());manualCellMethods[#manualCellMethods+1]=method;return false
+end
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.event("YourTurn",35)
+c.tick();c.tick();c.tick();c.tick()
+assert(manualPieceClicks==0 and manualGuides==1 and c.activity()=="Нажмите подсвеченную шашку")
+local cellsBeforeManual=cells;time=time+8;c.tick();assert(manualPieceClicks==0 and cells==cellsBeforeManual)
+c.event("PieceSelected","own",{{row=5,col=4,isCapture=true}});c.tick();assert(cells==cellsBeforeManual+1)
+time=time+2;c.tick();assert(#manualCellMethods==1 and manualCellMethods[1]=="virtual")
+time=time+2;c.tick();assert(#manualCellMethods==2 and manualCellMethods[2]=="mouse")
+c.event("PieceMoved","own",5,4,"foe1",false);c.event("MustContinueCapture","own",{{row=7,col=6,isCapture=true}});c.tick()
+assert(cells==cellsBeforeManual+2,"multi-capture uses the next confirmed cell without reselecting")
+c.event("PieceMoved","own",7,6,"foe2",false);c.event("TurnChanged","foe");assert(c.running);c.stop()
+-- Stop / wrong selection never trigger a cell press.
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();c.tick()
+local oldCells=cells;c.event("PieceSelected","other",{{row=5,col=4,isCapture=true}});assert(not c.running and cells==oldCells)
+c.start();c.vote("Start",{hasLocal=true});c.vote("Result","American");c.event("GameStarted");c.event("TurnChanged","me");c.tick();c.tick();c.tick();c.tick()
+c.stop();time=time+5;c.tick();assert(cells==oldCells and manualPieceClicks==0)
+a.manualSelection=nil;a.preferVirtualCell=nil;a.retryDetector=nil;a.retryCell=nil;a.showGuide=nil;a.clearGuide=nil
 -- A vote handler that yields may resume after Stop and a new Start.
 a.vote=function(_,_,pending)
     assert(pending());c.stop();c.start();assert(not pending(),"old pending predicate must not match a new session")

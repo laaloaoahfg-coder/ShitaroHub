@@ -146,9 +146,9 @@ remote.OnClientEvent:Fire("GameStarted")
 remote.OnClientEvent:Fire("TurnChanged",localPlayer,{})
 remote.OnClientEvent:Fire("YourTurn",35)
 step();assert(hudTurn.Text:find("Ваш ход",1,true) and hudTurn.Text:find("Classic",1,true),"HUD shows turn and rules")
-step();step()
-assert(#clicks==1,"must select exactly one piece")
-local selected=clicks[1].Parent.Parent.Name
+step();step();step()
+assert(#clicks==0 and hudAction.Text=="Нажмите подсвеченную шашку","player selects the planned piece without injection")
+local selected=assert(highlights[#highlights]).Adornee.Name
 local e=assert(loadfile("core/checkers_engine.lua"))()
 local options={}
 for _,m in ipairs(e.moves(initial,2,"Classic")) do
@@ -158,27 +158,28 @@ for _,m in ipairs(e.moves(initial,2,"Classic")) do
 end
 assert(#options>0)
 remote.OnClientEvent:Fire("PieceSelected",selected,options)
-step();assert(#clicks==2,"must click a server-confirmed destination")
-local pos=clicks[2].Parent.Position
+step();assert(#clicks==1,"must click a server-confirmed destination")
+local pos=clicks[1].Parent.Position
 remote.OnClientEvent:Fire("PieceMoved",selected,pos.Z,pos.X,nil,false)
 remote.OnClientEvent:Fire("GameOver",localPlayer,true)
 assert(clipboard and clipboard==logEnv.ShitaroCheckersBotLog,"game end must copy the log")
-assert(clipboard:find("GAME GameOver winner=local",1,true) and clipboard:find("SELECT_ATTEMPT",1,true),"log includes actions and game events")
+assert(clipboard:find("GAME GameOver winner=local",1,true) and clipboard:find("MANUAL_SELECTION",1,true),"log includes actions and game events")
 assert(not clipboard:find("Me",1,true) and not clipboard:find("UserId=42",1,true),"log must not expose player identifiers")
 statsButton.Activated:Fire()
 assert(stats.Visible and stats:FindFirstChild("Stats").Text:find("Побед: 1",1,true),"stats screen win")
-hudStop.Activated:Fire();step();assert(#clicks==2,"no more actions after HUD stop")
+hudStop.Activated:Fire();step();assert(#clicks==1,"no more actions after HUD stop")
 assert(hud.Visible and hudStatus.Text=="Остановлен" and hudAction.Text=="Бот не действует","HUD persists after stop")
 local markerCount=#markerFolder:GetChildren();step()
 assert(#markerFolder:GetChildren()==markerCount and friendlyMarker.Adornee==friendly,"markers persist on the seated board after Stop")
--- Real module integration: a failed automatic retry highlights the planned
--- piece; a manual server-confirmed selection lets the bot click its cell.
+-- Real module integration: immediately highlight the planned piece without
+-- auto selecting it, and act on its server-confirmed destination.
 start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
 votes.OnClientEvent:Fire("Result","Classic",true);remote.OnClientEvent:Fire("GameStarted")
 remote.OnClientEvent:Fire("TurnChanged",localPlayer,{});remote.OnClientEvent:Fire("YourTurn",35)
-step();step();step();local guided=clicks[#clicks].Parent.Parent.Name
-for i=1,19 do step() end
-local mark=assert(highlights[#highlights],"failed automatic selection creates a visual guide")
+local beforePieceSelection=#clicks
+step();step();step();step();local mark=assert(highlights[#highlights],"manual selection creates a visual guide")
+local guided=mark.Adornee.Name
+assert(#clicks==beforePieceSelection,"manual selection never injects a piece click")
 assert(mark.Adornee.Name==guided and mark.Parent==mark.Adornee and hudStatus.Text=="Нажмите подсвеченную шашку")
 services.UserInputService.InputBegan:Fire({UserInputType=Enum.UserInputType.MouseButton1},false)
 hudCopy.Activated:Fire();assert(clipboard:find("GUIDE_INPUT mouse processed=false",1,true),"manual pointer observation is recorded without blocking")
@@ -196,8 +197,8 @@ hudStop.Activated:Fire()
 -- An unexpected server selection stops safely and leaves its reason on the HUD.
 start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
 votes.OnClientEvent:Fire("Result","American",false);remote.OnClientEvent:Fire("GameStarted")
-remote.OnClientEvent:Fire("TurnChanged",localPlayer,{});step();step();step()
-assert(hudAction.Text=="Шашка найдена; жду ответ игры","HUD displays pending selection")
+remote.OnClientEvent:Fire("TurnChanged",localPlayer,{});step();step();step();step()
+assert(hudAction.Text=="Нажмите подсвеченную шашку","HUD displays manual selection")
 remote.OnClientEvent:Fire("PieceSelected","Piece1_999",{{row=1,col=1,isCapture=false}})
 assert(hud.Visible and hudStatus.Text:find("Остановлен",1,true) and hudAction.Text=="Бот не действует","HUD retains halt reason")
 hudCopy.Activated:Fire();assert(hudCopy.Text=="Скопировано" and clipboard:find("HALT",1,true),"HUD copies halt log")
@@ -213,7 +214,7 @@ hum.SeatPart=seat1;seat1.Occupant=hum;seat2.Occupant=new("Humanoid","Opponent2")
 start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
 votes.OnClientEvent:Fire("Result","Classic",true);remote.OnClientEvent:Fire("GameStarted")
 remote.OnClientEvent:Fire("TurnChanged",localPlayer,{})
-step();step();step();assert(clicks[#clicks].Parent.Parent.Name:match("^Piece1_"),"Seat1 should select side one")
+step();step();step();step();assert(highlights[#highlights].Adornee.Name:match("^Piece1_"),"Seat1 should guide side one")
 stop.Activated:Fire()
 -- Destroying the UI while a move is planned must not execute the next tick.
 hum.SeatPart=seat2;seat2.Occupant=hum;hrp.Position=v(2,2,2)

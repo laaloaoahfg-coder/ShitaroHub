@@ -291,7 +291,7 @@ return function(engine, adapter)
             end
             if step and adapter.retryCell then
                 trace("CELL_RETRY",step.r..","..step.c)
-                local attempted=adapter.retryCell(step.r,step.c,moveStillPending)
+                local attempted=adapter.retryCell(step.r,step.c,moveStillPending,adapter.preferVirtualCell and "virtual" or nil)
                 if not c.running or s~=expectedState then return end
                 trace("CELL_RETRY_RESULT",tostring(attempted))
                 if moveStillPending() then s.moveVirtualAt=now()+2 end
@@ -308,8 +308,8 @@ return function(engine, adapter)
                     and (not s.deadline or now()<s.deadline-0.5) and s.plan==expectedPlan and s.stepIndex==expectedIndex
             end
             if step and adapter.retryCell and moveStillPending() then
-                trace("CELL_VIRTUAL_RETRY",step.r..","..step.c)
-                local attempted=adapter.retryCell(step.r,step.c,moveStillPending,"virtual")
+                trace("CELL_VIRTUAL_RETRY",step.r..","..step.c..(adapter.preferVirtualCell and " cursor" or " virtual"))
+                local attempted=adapter.retryCell(step.r,step.c,moveStillPending,adapter.preferVirtualCell and "mouse" or "virtual")
                 if not c.running or s~=expectedState then return end
                 trace("CELL_VIRTUAL_RESULT",tostring(attempted))
                 if moveStillPending() then s.cellGuideAt=now()+(attempted==true and 1.2 or 0) end
@@ -345,6 +345,15 @@ return function(engine, adapter)
             trace("PLAN",tostring(p.id).." from="..move.r..","..move.c.." to="..step.r..","..step.c.." steps="..#move.steps.." capture="..tostring(step.cr~=nil))
         elseif s.phase=="selectReady" then
             s.phase="select"
+            if adapter.manualSelection then
+                -- Selection is performed by the user. Never inject cursor or
+                -- detector input at the piece; wait for the server's ack.
+                s.selectRetried=true;s.retryAt=nil;s.virtualRetryAt=nil
+                s.phaseUntil=s.deadline and (s.deadline-1) or (now()+20)
+                s.guideAt=now()
+                trace("MANUAL_SELECTION","ожидаю выбор "..tostring(s.planId))
+                return
+            end
             local result=adapter.selectPiece(s.planId)
             if result~=nil then trace("SELECT_ATTEMPT",tostring(s.planId).." result="..tostring(result)) end
             if result==nil and s.phase=="select" then s.phase="selectReady"
