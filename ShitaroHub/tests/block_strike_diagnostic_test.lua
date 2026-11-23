@@ -190,11 +190,13 @@ nativePrint("PASS: focused player diagnostic (nicknames, sampling, movement, fal
 -- Names diagnostic discovers HUD labels and non-Players character models.
 local playerGui = new("PlayerGui", "PlayerGui", me)
 local scoreboard = new("Frame", "Scoreboard", playerGui)
-new("TextLabel", "Victim", scoreboard, { Text = "BbcVetle", Visible = true })
+new("TextLabel", "Victim", scoreboard, { Text = "AnotherPlayer", Visible = true })
 local chat = new("Frame", "ChatFrame", playerGui)
-new("TextLabel", "Message", chat, { Text = "BbcVetle PRIVATE_CHAT", Visible = true })
+new("TextLabel", "Message", chat, { Text = "AnotherPlayer PRIVATE_CHAT", Visible = true })
 local enemyNpc, npcRoot = avatar("CustomBot", 30)
-enemyNpc.attrs.DisplayName = "BbcVetle"
+enemyNpc.attrs.DisplayName = "AnotherPlayer"
+local billboard = new("BillboardGui", "NameGui", enemyNpc)
+new("TextLabel", "NameLabel", billboard, { Text = "AnotherPlayer", Visible = true })
 writefile = function(path, data) files[path] = data end
 setclipboard = function(data) clipboard = data end
 clipboard = nil
@@ -202,11 +204,12 @@ dofile("diagnostics/block_strike_names.lua")
 report = assert(env.ShitaroBlockStrikeNamesReport)
 assert(report == clipboard)
 assert(select(2, report:gsub("========== SAMPLE %d+/20", "")) == 20)
-assert(report:find("HUD exact target matches=1 shown=1", 1, true))
-assert(report:find("text=BbcVetle", 1, true))
+assert(report:find("HUD scoreboard/kill-feed/known-name entries=1 shown=1", 1, true))
+assert(report:find("text=AnotherPlayer", 1, true))
 assert(not report:find("PRIVATE_CHAT", 1, true))
-assert(report:find("name=CustomBot path=Workspace.CustomBot targetMatch=true playerOwner=<none>", 1, true))
-assert(report:find("attr DisplayName=BbcVetle", 1, true))
+assert(report:find("name=CustomBot path=Workspace.CustomBot targetMatch=false playerOwner=<none>", 1, true))
+assert(report:find("attr DisplayName=AnotherPlayer", 1, true))
+assert(report:find("model_label path=Workspace.CustomBot.NameGui.NameLabel text=AnotherPlayer", 1, true))
 assert(report:find("END OF REPORT", 1, true))
 local foundNames = false
 for path, data in pairs(files) do

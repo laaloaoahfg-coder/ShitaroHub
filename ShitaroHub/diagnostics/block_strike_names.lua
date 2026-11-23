@@ -1,7 +1,7 @@
--- Block Strike: locate a known in-game name in models and HUD, plus nearby rigs.
+-- Block Strike: inspect character models, in-game names and scoreboard/kill feed.
 -- Client-side observations only; no hooks, game mutations or remote calls.
--- Change TARGET_NAME before running if investigating another player.
-local TARGET_NAME = "BbcVetle"
+-- Optional: set TARGET_NAME to prioritize a specific name, or leave empty.
+local TARGET_NAME = ""
 local SAMPLES, INTERVAL, MAX_MODELS, MAX_HUD = 20, 1, 80, 50
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -23,7 +23,7 @@ local function clean(value)
     return s
 end
 local function matches(value)
-    return value ~= nil and string.find(string.lower(tostring(value)), target, 1, true) ~= nil
+    return target ~= "" and value ~= nil and string.find(string.lower(tostring(value)), target, 1, true) ~= nil
 end
 local function path(obj)
     if not obj then return "<none>" end
@@ -100,8 +100,8 @@ local function logPart(label, p, camera)
     local _, _, projection = screen(camera, p)
     add("    " .. label .. " id=" .. ident(p) .. " pos=" .. vec(p.Position) .. " moved=" .. moved .. " " .. projection .. " localTransparency=" .. tostring(p.LocalTransparencyModifier))
 end
--- Do not inspect chat, text boxes, script sources, remote traffic or arbitrary HUD
--- text. Record a HUD label only when it contains the exact target substring.
+-- Capture only scoreboard / kill-feed related UI or exact known player names.
+-- Chat and text-entry widgets are intentionally excluded.
 local function chatAncestor(object)
     local cursor = object
     while cursor do
@@ -110,21 +110,51 @@ local function chatAncestor(object)
     end
     return false
 end
-local function inspectHud()
+local function hudCategory(object, gui)
+    local cursor = object
+    while cursor and cursor ~= gui do
+        local name = tostring(cursor.Name):lower():gsub("[^%w]", "")
+        for _, word in ipairs({ "scoreboard", "score", "leaderboard", "playerlist", "killfeed", "killlog", "killmessage", "elimination", "deathfeed" }) do
+            if name:find(word, 1, true) then return word end
+        end
+        cursor = cursor.Parent
+    end
+end
+local function inspectHud(roster)
     local gui = me:FindFirstChildOfClass("PlayerGui")
     if not gui then add("HUD: PlayerGui unavailable"); return end
+    local known = {}
+    for _, p in ipairs(roster) do
+        known[string.lower(p.Name)] = true
+        known[string.lower(p.DisplayName)] = true
+    end
     local hits = {}
     for _, object in ipairs(gui:GetDescendants()) do
         if (object:IsA("TextLabel") or object:IsA("TextButton")) and not chatAncestor(object) then
             local label = attempt(function() return object.Text end, "")
-            if matches(label) then
-                hits[#hits + 1] = "  path=" .. path(object) .. " class=" .. object.ClassName .. " visible=" .. tostring(object.Visible) .. " text=" .. clean(label)
+            local category = hudCategory(object, gui)
+            local isKnown = known[string.lower(label)] == true
+            if label ~= "" and (category or isKnown or matches(label)) then
+                hits[#hits + 1] = "  path=" .. path(object) .. " class=" .. object.ClassName .. " visible=" .. tostring(object.Visible) .. " category=" .. tostring(category or (isKnown and "known_player" or "target")) .. " text=" .. clean(label)
             end
         end
     end
     table.sort(hits)
-    add("HUD exact target matches=" .. #hits .. " shown=" .. math.min(#hits, MAX_HUD) .. " (Visible is local property only; ancestor visibility may differ)")
+    add("HUD scoreboard/kill-feed/known-name entries=" .. #hits .. " shown=" .. math.min(#hits, MAX_HUD) .. " (Visible is local only; ancestor visibility may differ)")
     for i = 1, math.min(#hits, MAX_HUD) do add(hits[i]) end
+end
+-- Character overhead names can be stored in BillboardGui rather than attributes.
+local function modelLabels(model)
+    local found = {}
+    for _, object in ipairs(model:GetDescendants()) do
+        if (object:IsA("TextLabel") or object:IsA("TextButton")) and not chatAncestor(object) then
+            local label = attempt(function() return object.Text end, "")
+            if label ~= "" then found[#found + 1] = "    model_label path=" .. path(object) .. " text=" .. clean(label) end
+        end
+    end
+    table.sort(found)
+    for i = 1, math.min(#found, 12) do add(found[i]) end
+    if #found > 12 then add("    model labels omitted=" .. (#found - 12)) end
 end
 local function snapshot(number)
     local camera = Workspace.CurrentCamera
@@ -140,7 +170,7 @@ local function snapshot(number)
         local team = player.Team and player.Team.Name or attempt(function() return player:GetAttribute("Team") end, "<none>")
         add("  PLAYER name=" .. clean(player.Name) .. " display=" .. clean(player.DisplayName) .. " userId=" .. tostring(player.UserId) .. " team=" .. clean(team) .. " character=" .. path(char) .. " targetMatch=" .. tostring(matches(player.Name) or matches(player.DisplayName)))
     end
-    inspectHud()
+    inspectHud(roster)
     local candidates, seen = {}, {}
     for _, object in ipairs(Workspace:GetDescendants()) do
         if object:IsA("Model") and not seen[object] then
@@ -150,7 +180,7 @@ local function snapshot(number)
                 local human = object:FindFirstChildOfClass("Humanoid")
                 local anim = object:FindFirstChildOfClass("AnimationController")
                 local named = targetInModel(object)
-                if not named and not owner[object] and not (r and h and (human or anim)) then return nil end
+                if not named and not owner[object] and not (r and h) then return nil end
                 local onScreen, distance = screen(camera, h or r)
                 return { model = object, r = r, h = h, human = human, anim = anim, named = named, onScreen = onScreen, distance = distance }
             end)
@@ -172,6 +202,7 @@ local function snapshot(number)
             local entries = metadata(c.model)
             for j = 1, math.min(#entries, 25) do add("    " .. entries[j]) end
             if #entries > 25 then add("    metadata omitted=" .. (#entries - 25)) end
+            modelLabels(c.model)
             logPart("root", c.r, camera)
             logPart("head", c.h, camera)
         end)
@@ -206,9 +237,9 @@ local function save(report)
 end
 print("[Shitaro names] Started: 20 samples, about 19 seconds. Keep the target or scoreboard visible.")
 local ok, err = xpcall(function()
-    add("SHITAROHUB BLOCK STRIKE NAMES DIAGNOSTIC v1")
+    add("SHITAROHUB BLOCK STRIKE NAMES DIAGNOSTIC v2")
     add("UTC=" .. os.date("!%Y-%m-%d %H:%M:%S") .. " placeId=" .. tostring(game.PlaceId) .. " gameId=" .. tostring(game.GameId) .. " jobId=" .. tostring(game.JobId))
-    add("target=" .. TARGET_NAME .. "; client state only. onScreen is projection, not proof of visibility. Contains nicknames, user IDs, positions, server ID and matching HUD text; review before sharing.")
+    add("target=" .. (TARGET_NAME ~= "" and TARGET_NAME or "<any>") .. "; client state only. onScreen is projection, not proof of visibility. Contains nicknames, user IDs, positions, server ID and matching HUD text; review before sharing.")
     for i = 1, SAMPLES do
         local sampleOk, sampleErr = pcall(snapshot, i)
         if not sampleOk then add("SAMPLE ERROR " .. i .. ": " .. clean(sampleErr)) end
