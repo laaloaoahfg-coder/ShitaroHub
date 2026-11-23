@@ -240,6 +240,7 @@ function typeof(value) if getmetatable(value) == vector then return "Vector3" en
 writefile = function(path, data) files[path] = data end
 setclipboard = function(data) clipboard = data end
 clipboard = nil
+target.Character.attrs.ClientCharacterPresentationVisible = false
 function task.wait()
     assert(listener)
     listener({player="Enemy", secret="PASSWORD_HIDDEN", position=vec(1,2,3), userId=2})
@@ -253,6 +254,7 @@ assert(report:find("REMOTE totals received=19 sampled=", 1, true))
 assert(report:find("arg1.position Vector3=(1.00, 2.00, 3.00)", 1, true))
 assert(report:find("arg1.player string=Enemy", 1, true))
 assert(report:find("arg1.secret string=<redacted>", 1, true))
+assert(report:match("PLAYER name=Enemy[^\n]-presentationVisible=false"))
 assert(not report:find("PASSWORD_HIDDEN", 1, true))
 local foundSnapshot = false
 for path, data in pairs(files) do
@@ -274,3 +276,42 @@ printed = false
 for _, message in ipairs(messages) do if message == report then printed = true end end
 assert(printed)
 nativePrint("PASS: snapshot probe missing-event and output-failure fallbacks")
+
+-- Binary probe: bounded raw buffer samples, 0-based offsets, privacy and fallback.
+remote.ClassName = "RemoteEvent"
+local fakeBufferMeta = {}
+buffer = {}
+function buffer.len(value) return #value.bytes end
+function buffer.readu8(value, index) return assert(value.bytes[index + 1]) end
+local priorTypeof = typeof
+function typeof(value) if getmetatable(value) == fakeBufferMeta then return "buffer" end return priorTypeof(value) end
+local fakeBytes = {}
+for i = 1, 600 do fakeBytes[i] = (i - 1) % 256 end
+local fakeBuffer = setmetatable({ bytes = fakeBytes }, fakeBufferMeta)
+writefile = function(path, data) files[path] = data end
+setclipboard = function(data) clipboard = data end
+clipboard, disconnected = nil, false
+function task.wait() assert(listener); listener(fakeBuffer) end
+dofile("diagnostics/block_strike_buffers.lua")
+report = assert(env.ShitaroBlockStrikeBuffersReport)
+assert(report == clipboard and disconnected)
+assert(select(2, report:gsub("SAMPLE %d+/40", "")) == 40)
+assert(report:find("REMOTE totals received=39 sampled=", 1, true))
+assert(report:find("arg1 buffer length=600 hex_offset=0 bytes=512 truncated=true hex=000102030405", 1, true))
+assert(report:find("RAW BUFFER BYTES", 1, true))
+local foundBuffer = false
+for path, data in pairs(files) do
+    if path:match("block_strike_buffers_.*%.txt$") then assert(data == report); foundBuffer = true end
+end
+assert(foundBuffer)
+remote.ClassName = "Folder"
+writefile = function() error("disk unavailable") end
+setclipboard = nil
+task.wait = function() end
+dofile("diagnostics/block_strike_buffers.lua")
+report = env.ShitaroBlockStrikeBuffersReport
+assert(report:find("RemoteSnapshot unavailable", 1, true))
+printed = false
+for _, message in ipairs(messages) do if message == report then printed = true end end
+assert(printed)
+nativePrint("PASS: bounded binary samples (hex, truncation, listener cleanup, fallbacks)")

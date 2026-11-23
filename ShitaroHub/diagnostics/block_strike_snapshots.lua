@@ -94,7 +94,12 @@ local function samplePlayers(index)
         local char = p.Character
         local root = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
         local inWorld = char and safe(function() return char:IsDescendantOf(Workspace) end, false) or false
-        local visible = char and safe(function() return char:GetAttribute("ClientCharacterPresentationVisible") end, "<none>") or "<none>"
+        local visible = "<none>"
+        if char then
+            -- Preserve false: an "and ... or" expression would turn it into
+            -- "<none>" and obscure the game's presentation state.
+            visible = safe(function() return char:GetAttribute("ClientCharacterPresentationVisible") end, "<none>")
+        end
         local position = root and safe(function() return vec(root.Position) end) or "<none>"
         add("PLAYER name=" .. clean(p.Name) .. " display=" .. clean(p.DisplayName) .. " userId=" .. tostring(p.UserId) .. " team=" .. clean(team(p)) .. " local=" .. tostring(p == me) .. " char=" .. path(char) .. " inWorkspace=" .. tostring(inWorld) .. " presentationVisible=" .. tostring(visible) .. " root=" .. position)
     end
