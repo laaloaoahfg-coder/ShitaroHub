@@ -1,0 +1,145 @@
+-- Run the real UI integration and adapter against a minimal Roblox mock.
+local function signal()
+    local s={items={}}
+    function s:Connect(fn)
+        local x={fn=fn,enabled=true};self.items[#self.items+1]=x
+        return {Disconnect=function() x.enabled=false end}
+    end
+    function s:Fire(...) for _,x in ipairs(self.items) do if x.enabled then x.fn(...) end end end
+    return s
+end
+local vec={};vec.__index=function(a,k) if k=="Magnitude" then return math.sqrt(a.X*a.X+a.Y*a.Y+a.Z*a.Z) end end
+vec.__sub=function(a,b) return setmetatable({X=a.X-b.X,Y=a.Y-b.Y,Z=a.Z-b.Z},vec) end
+local function v(x,y,z) return setmetatable({X=x,Y=y,Z=z},vec) end
+local O={};O.__index=O
+function O:IsA(k)
+    if self.ClassName==k then return true end
+    if k=="BasePart" then return self.ClassName=="Part" or self.ClassName=="MeshPart" or self.ClassName=="Seat" end
+    if k=="GuiButton" then return self.ClassName=="TextButton" or self.ClassName=="ImageButton" end
+    return false
+end
+function O:FindFirstChild(n) for _,x in ipairs(self.children) do if x.Name==n then return x end end end
+function O:FindFirstChildOfClass(n) for _,x in ipairs(self.children) do if x:IsA(n) then return x end end end
+function O:GetChildren() return self.children end
+function O:GetAttribute(k) return self.attrs[k] end
+local function new(class,name,parent,props)
+    local x=setmetatable({ClassName=class,Name=name,Parent=parent,children={},attrs={},Activated=signal(),MouseButton1Click=signal()},O)
+    for k,val in pairs(props or {}) do x[k]=val end
+    if parent then parent.children[#parent.children+1]=x end
+    return x
+end
+function typeof(x) return getmetatable(x)==O and "Instance" or type(x) end
+UDim2={fromOffset=function(...) return {...} end,fromScale=function(...) return {...} end,new=function(...) return {...} end}
+UDim={new=function(...) return {...} end}
+Color3={fromRGB=function(...) return {...} end}
+Enum={TextXAlignment={Center=1}}
+local world=new("Workspace","Workspace")
+local rep=new("ReplicatedStorage","ReplicatedStorage")
+local remote=new("RemoteEvent","GameEvent",rep);remote.OnClientEvent=signal()
+local votes=new("RemoteEvent","ModeVoteEvent",rep);votes.OnClientEvent=signal()
+local localPlayer=new("Player","Me");localPlayer.UserId=42
+local pg=new("PlayerGui","PlayerGui",localPlayer)
+local char=new("Model","Char",world);localPlayer.Character=char
+local hrp=new("Part","HumanoidRootPart",char,{Position=v(2,2,2)})
+local hum=new("Humanoid","Humanoid",char,{Health=100})
+function hum:MoveTo(pos) self.lastMove=pos end
+local tabRoot=new("Model","Game1",world)
+local seat1=new("Seat","Seat1",tabRoot,{Position=v(2,0,0)})
+local seat2=new("Seat","Seat2",tabRoot,{Position=v(2,0,5),Occupant=hum});hum.SeatPart=seat2
+local board=new("Folder","Board",tabRoot);local pieces=new("Folder","Pieces",tabRoot)
+local initial={};for r=1,8 do initial[r]={} end
+local number={0,0}
+for r=1,8 do for col=1,8 do
+    local dark=(r+col)%2==1
+    local tile=new("Part",dark and "Move" or "BlockMove",board,{Position=v(col,0,r)})
+    new("ClickDetector","ClickDetector",tile,{MaxActivationDistance=32})
+    if dark and (r<=3 or r>=6) then
+        local side=r<=3 and 2 or 1;number[side]=number[side]+1
+        local id="Piece"..side.."_"..number[side]
+        initial[r][col]={side=side,id=id,king=false}
+        local piece=new("MeshPart",id,pieces,{Position=v(col,0,r)})
+        local hit=new("Part","ClickHitbox",piece,{Position=v(col,0,r)})
+        new("ClickDetector","ClickDetector",hit,{MaxActivationDistance=20})
+    end
+end end
+local modeGui=new("ScreenGui","ModeSelectGui",pg,{Enabled=true})
+local panel=new("Frame","Panel",modeGui)
+new("ImageButton","AmericanButton",panel,{Visible=true})
+new("ImageButton","ClassicButton",panel,{Visible=true})
+local activeGui=new("ScreenGui","ShitaroMenuOnly",pg)
+local page=new("Frame","checkers",activeGui)
+local players={LocalPlayer=localPlayer}
+local services={Workspace=world,ReplicatedStorage=rep,HttpService={}}
+game={PlaceId=75526590957446};function game:GetService(n) return assert(services[n]) end
+local clicks,voteCalls={},0
+function fireclickdetector(d) clicks[#clicks+1]=d end
+function getconnections() return {{Enabled=true,Fire=function() voteCalls=voteCalls+1 end}} end
+isfile=nil;readfile=nil;writefile=nil
+local co;task={}
+function task.spawn(f) co=coroutine.create(f);assert(coroutine.resume(co)) end
+function task.wait() coroutine.yield() end
+local function step() local ok,err=coroutine.resume(co);assert(ok,err) end
+local loader={}
+function loader.module(path) return assert(loadfile(path))() end
+local ctx={Players=players,player=localPlayer,playerGui=pg,gui=activeGui,Loader=loader,tabs={[7]={page=page}},
+    colors={text=1},corner=function() end,
+    make=function(class,props,parent) return new(class,props.Name or class,parent,props) end,
+    connect=function(s,f) return s:Connect(f) end}
+assert(loadfile("modules/checkers.lua"))()(ctx)
+local main=assert(page:FindFirstChild("CheckersBot"))
+local stats=assert(page:FindFirstChild("CheckersStatistics"))
+local start=assert(main:FindFirstChild("Start"));local stop=assert(main:FindFirstChild("Stop"))
+local statsButton=assert(main:FindFirstChild("Statistics"))
+assert(#clicks==0,"bot must be disabled on load")
+local clickApi=fireclickdetector;fireclickdetector=nil
+start.Activated:Fire();step();assert(#clicks==0 and main:FindFirstChild("Status").Text:find("fireclickdetector",1,true),"start refuses missing executor capability")
+fireclickdetector=clickApi
+start.Activated:Fire()
+votes.OnClientEvent:Fire("Start",{{userId=42}},15)
+step();assert(voteCalls==1,"one local vote")
+votes.OnClientEvent:Fire("Voted",42,"American")
+votes.OnClientEvent:Fire("Result","Classic",true)
+remote.OnClientEvent:Fire("GameStarted")
+remote.OnClientEvent:Fire("TurnChanged",localPlayer,{})
+remote.OnClientEvent:Fire("YourTurn",35)
+step();step();step()
+assert(#clicks==1,"must select exactly one piece")
+local selected=clicks[1].Parent.Parent.Name
+local e=assert(loadfile("core/checkers_engine.lua"))()
+local options={}
+for _,m in ipairs(e.moves(initial,2,"Classic")) do
+    if initial[m.r][m.c].id==selected then
+        local st=m.steps[1];options[#options+1]={row=st.r,col=st.c,isCapture=st.cr~=nil}
+    end
+end
+assert(#options>0)
+remote.OnClientEvent:Fire("PieceSelected",selected,options)
+step();assert(#clicks==2,"must click a server-confirmed destination")
+local pos=clicks[2].Parent.Position
+remote.OnClientEvent:Fire("PieceMoved",selected,pos.Z,pos.X,nil,false)
+remote.OnClientEvent:Fire("GameOver",localPlayer,true)
+statsButton.Activated:Fire()
+assert(stats.Visible and stats:FindFirstChild("Stats").Text:find("Побед: 1",1,true),"stats screen win")
+stop.Activated:Fire();step();assert(#clicks==2,"no more actions after stop")
+-- When standing, prefer the empty seat opposite an occupied chair and cancel
+-- any movement the bot initiated when the user presses Stop.
+hum.SeatPart=nil;seat2.Occupant=nil;seat1.Occupant=new("Humanoid","Opponent")
+hrp.Position=v(2,2,0);hum.lastMove=nil
+start.Activated:Fire();step()
+assert(hum.lastMove==seat2.Position,"bot should walk to available seat opposite a player")
+stop.Activated:Fire();assert(hum.lastMove==hrp.Position,"stop cancels bot movement")
+-- The opposite chair maps to side one; server confirmation is still required.
+hum.SeatPart=seat1;seat1.Occupant=hum;seat2.Occupant=new("Humanoid","Opponent2")
+start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
+votes.OnClientEvent:Fire("Result","Classic",true);remote.OnClientEvent:Fire("GameStarted")
+remote.OnClientEvent:Fire("TurnChanged",localPlayer,{})
+step();step();step();assert(clicks[#clicks].Parent.Parent.Name:match("^Piece1_"),"Seat1 should select side one")
+stop.Activated:Fire()
+-- Destroying the UI while a move is planned must not execute the next tick.
+hum.SeatPart=seat2;seat2.Occupant=hum;hrp.Position=v(2,2,2)
+start.Activated:Fire();votes.OnClientEvent:Fire("Start",{{userId=42}},15)
+votes.OnClientEvent:Fire("Result","American",false);remote.OnClientEvent:Fire("GameStarted")
+remote.OnClientEvent:Fire("TurnChanged",localPlayer,{})
+step();step();local beforeClose=#clicks
+activeGui.Parent=nil;step();assert(#clicks==beforeClose,"closing UI must not execute another action")
+io.write("PASS: actual checkers module, GUI, vote, board mapping, confirmed clicks, stats and stop\n")

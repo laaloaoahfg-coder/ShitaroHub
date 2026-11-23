@@ -209,6 +209,7 @@ local locale = {
         ["tab.misc"] = "misc",
         ["tab.skins"] = "skins",
         ["tab.settings"] = "settings",
+        ["tab.checkers"] = "checkers",
         ["header.config"] = "No config",
         ["header.profile"] = "global",
         ["close.title"] = "disable cheat",
@@ -255,6 +256,7 @@ local locale = {
         ["tab.misc"] = "прочее",
         ["tab.skins"] = "скины",
         ["tab.settings"] = "настройки",
+        ["tab.checkers"] = "шашки",
         ["header.config"] = "нет конфига",
         ["header.profile"] = "глобальный",
         ["close.title"] = "отключение чита",
@@ -641,14 +643,18 @@ local function drawTab(tab)
     tab.page.Visible = active
 end
 
-for index, entry in ipairs({
+local navEntries = {
     { "aim", "crosshair" },
     { "trigger", "trigger" },
     { "visuals", "eye" },
     { "misc", "gear" },
     { "skins", "skins" },
     { "settings", "sliders" },
-}) do
+}
+if game.PlaceId == 75526590957446 then
+    table.insert(navEntries, { "checkers", "layers" })
+end
+for index, entry in ipairs(navEntries) do
     local button = make("TextButton", {
         Name = entry[1],
         Size = UDim2.fromOffset(0, 26),
@@ -2429,7 +2435,7 @@ local function layoutNavigation()
     local cellHeight = touch and 44 or 26
 
     local navHeight = narrow
-        and (cellHeight * 2 + 8)
+        and (cellHeight * math.ceil(#tabs / 3) + 8)
         or (cellHeight + 6)
 
     nav.Size = UDim2.fromOffset(
@@ -2640,6 +2646,7 @@ do
         "modules/aim.lua",
         "modules/trigger.lua",
         "modules/skins.lua",
+        "modules/checkers.lua",
     }) do
         if not Loader then
             warn("[shitaro] no loader, module skipped: " .. path)
