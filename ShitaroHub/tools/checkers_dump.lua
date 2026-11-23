@@ -22,9 +22,11 @@
     Usage:
       loadstring(game:HttpGet("https://raw.githubusercontent.com/laaloaoahfg-coder/ShitaroHub/main/ShitaroHub/tools/checkers_dump.lua"))()
 
-    Capture runs for CONFIG.logSeconds seconds (F9 stops it early), then the
-    report is written to CONFIG.filePath when the executor has writefile and
-    copied to the clipboard when it has setclipboard. Send that file over.
+    Capture runs for CONFIG.logSeconds seconds. F9 stops it early, F8 copies the
+    report collected so far to the clipboard without stopping the capture. When
+    the capture ends the report is written to CONFIG.filePath inside the
+    executor workspace (Xeno: %localappdata%\\Xeno\\workspace\\checkers_dump.txt)
+    and the same text goes to the clipboard, so Ctrl+V in any chat is enough.
 ]]
 
 xpcall(function()
@@ -58,6 +60,7 @@ xpcall(function()
     local reportChars = 0
     local finished = false
     local stopRequested = false
+    local copyRequested = false
     local startedAt = os.clock()
 
     -- Report helpers ---------------------------------------------------------
@@ -103,6 +106,39 @@ xpcall(function()
 
     local function stamp()
         return string.format("%7.2f", os.clock() - startedAt)
+    end
+
+    -- Where the file lands and how the clipboard copy is made
+    local function workspaceFolder()
+        if type(getworkspace) == "function" then
+            local ok, path = pcall(getworkspace)
+            if ok and type(path) == "string" and path ~= "" then
+                return path
+            end
+        end
+        return "the executor workspace folder (Xeno: %localappdata%\\Xeno\\workspace)"
+    end
+
+    local function reportText()
+        return table.concat(report, "\n")
+    end
+
+    local function copyToClipboard(label)
+        if type(setclipboard) ~= "function" then
+            print("[checkers/dump] setclipboard is not available in this executor")
+            return false
+        end
+
+        local text = reportText()
+        local ok = pcall(setclipboard, text)
+
+        if ok then
+            print("[checkers/dump] " .. label .. " copied to the clipboard (" .. #text .. " chars)")
+        else
+            warn("[checkers/dump] clipboard copy failed")
+        end
+
+        return ok
     end
 
     local function pathOf(inst)
@@ -519,6 +555,7 @@ xpcall(function()
     section("EXECUTOR")
     add("writefile        " .. tostring(type(writefile) == "function"))
     add("setclipboard     " .. tostring(type(setclipboard) == "function"))
+    add("getworkspace     " .. tostring(type(getworkspace) == "function"))
     add("hookmetamethod   " .. tostring(type(hookmetamethod) == "function"))
     add("namecall hook    " .. hookNote)
     add("identifyexecutor " .. (type(identifyexecutor) == "function" and tostring(identifyexecutor()) or "n/a"))
@@ -656,17 +693,24 @@ xpcall(function()
         UserInputService.InputBegan:Connect(function(input)
             if input.KeyCode == Enum.KeyCode.F9 then
                 stopRequested = true
+            elseif input.KeyCode == Enum.KeyCode.F8 then
+                copyRequested = true
             end
         end)
     end)
 
-    print("[checkers/dump] capturing for " .. CONFIG.logSeconds .. "s, F9 stops early")
+    print("[checkers/dump] capturing for " .. CONFIG.logSeconds .. "s, F9 stops early, F8 copies now")
 
     task.spawn(function()
         while not finished and not stopRequested and os.clock() < deadline do
             task.wait(0.2)
             pcall(scanGuiTexts)
             pcall(scanMovingParts)
+
+            if copyRequested then
+                copyRequested = false
+                pcall(copyToClipboard, "report so far (traffic and moves are added when the capture ends)")
+            end
         end
         finished = true
     end)
@@ -719,12 +763,13 @@ xpcall(function()
 
     -- Save -------------------------------------------------------------------
 
-    local text = table.concat(report, "\n")
+    local text = reportText()
 
     if type(writefile) == "function" then
         local saved = pcall(writefile, CONFIG.filePath, text)
         if saved then
             print("[checkers/dump] saved " .. #text .. " bytes to " .. CONFIG.filePath)
+            print("[checkers/dump] file folder: " .. workspaceFolder())
         else
             warn("[checkers/dump] writefile failed")
         end
@@ -732,10 +777,7 @@ xpcall(function()
         print("[checkers/dump] writefile is not available in this executor")
     end
 
-    if type(setclipboard) == "function" then
-        local copied = pcall(setclipboard, text)
-        print("[checkers/dump] clipboard " .. (copied and "filled with the same report" or "failed"))
-    end
+    copyToClipboard("full report")
 
     print(string.format("[checkers/dump] done: %d lines, %d chars", #report, reportChars))
 end, function(err)
