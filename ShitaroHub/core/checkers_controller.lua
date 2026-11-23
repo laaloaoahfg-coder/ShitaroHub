@@ -133,9 +133,14 @@ return function(engine, adapter)
         if not c.running then return end
         if s.voteOpen and not s.voteAck and now()>=(s.nextVote or 0) and s.voteAttempts<3 then
             s.voteAttempts=s.voteAttempts+1;s.nextVote=now()+2
-            local ok=adapter.vote("American",s.voteAttempts)
+            local expectedState=s
+            local function voteStillPending()
+                return c.running and s==expectedState and s.voteOpen and not s.voteAck
+            end
+            local ok=adapter.vote("American",s.voteAttempts,voteStillPending)
+            if not c.running or s~=expectedState then return end
             trace("VOTE_ATTEMPT", "номер="..s.voteAttempts.." вызван="..tostring(ok))
-            if not ok then status("Голосую; при необходимости выберите вручную") end
+            if not ok and voteStillPending() then status("Голосую; при необходимости выберите вручную") end
         elseif s.voteOpen and not s.voteAck and s.voteAttempts>=3 and not s.voteFailed and now()>=(s.nextVote or 0) then
             s.voteFailed=true
             trace("VOTE_TIMEOUT","подтверждение голоса не получено")
@@ -174,7 +179,12 @@ return function(engine, adapter)
             s.selectRetried=true
             if adapter.retryPiece then
                 trace("SELECT_RETRY","физический клик по "..tostring(s.planId))
-                local attempted=adapter.retryPiece(s.planId)
+                local expectedState,expectedId=s,s.planId
+                local function selectionStillPending()
+                    return c.running and s==expectedState and s.turn and s.phase=="select" and s.planId==expectedId
+                end
+                local attempted=adapter.retryPiece(s.planId,selectionStillPending)
+                if not c.running or s~=expectedState then return end
                 trace("SELECT_RETRY_RESULT",tostring(attempted))
             else trace("SELECT_RETRY","физический клик недоступен") end
         end

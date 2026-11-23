@@ -4,6 +4,7 @@ if game.PlaceId ~= 75526590957446 or not ctx.tabs[7] then return end
 local Players, Workspace = ctx.Players, game:GetService("Workspace")
 local ReplicatedStorage, HttpService = game:GetService("ReplicatedStorage"), game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 local player, playerGui, gui = ctx.player, ctx.playerGui, ctx.gui
 local make, connect, corner = ctx.make, ctx.connect, ctx.corner
 local okEngine, engine = pcall(ctx.Loader.module, "core/checkers_engine.lua")
@@ -210,15 +211,24 @@ local function guiHitSafe(x,y,expected)
     if expected and not found then log("INPUT_GUARD","button not at intended point");return false end
     return true
 end
-local function pointerClick(x,y,method,expected)
-    if not controller or not controller.running then return false end
+local inputBusy=false
+local function pointerClick(x,y,method,expected,stillPending)
+    if inputBusy or not controller or not controller.running then return false end
     local camera=Workspace.CurrentCamera
     if not camera or type(x)~="number" or type(y)~="number" then return false end
     local size=camera.ViewportSize
     if not size or x<0 or y<0 or x>=size.X or y>=size.Y then log("INPUT_GUARD","outside viewport");return false end
+    inputBusy=true
     local oldEnabled=gui.Enabled
     local ok,result=pcall(function()
         gui.Enabled=false
+        -- Let rendering and hit-testing actually update before injecting. The
+        -- hub has DisplayOrder 10000, so toggling it only for the same Lua
+        -- frame can still leave its window in the engine's input snapshot.
+        RunService.RenderStepped:Wait()
+        if not controller.running or (stillPending and not stillPending()) then
+            log("INPUT_GUARD","action no longer pending");return false
+        end
         if not guiHitSafe(x,y,expected) then return false end
         if method=="mouse" then
             if type(mousemoveabs)~="function" or (type(mouse1click)~="function" and (type(mouse1press)~="function" or type(mouse1release)~="function")) then return false end
@@ -238,24 +248,34 @@ local function pointerClick(x,y,method,expected)
         local got,vim=pcall(function() return game:GetService("VirtualInputManager") end)
         if not got or not vim then return false end
         local down=pcall(function() vim:SendMouseButtonEvent(x,y,0,true,game,0) end)
+        if down then pcall(function() RunService.RenderStepped:Wait() end) end
+        -- Always release a pressed button, even if Stop or acknowledgement
+        -- arrived while waiting. Never try another input after a partial down.
         local up=pcall(function() vim:SendMouseButtonEvent(x,y,0,false,game,0) end)
         log("INPUT", "virtual click down="..tostring(down).." up="..tostring(up))
-        return down and up
+        return down
     end)
-    gui.Enabled=oldEnabled
+    pcall(function() gui.Enabled=oldEnabled end)
+    inputBusy=false
     if not ok then log("INPUT","click raised an error");return false end
     return result==true
 end
-local function clickVoteButton(b,method)
+local function clickVoteButton(b,screen,method,stillPending)
     local ok,x,y=pcall(function()
         local pos,size=b.AbsolutePosition,b.AbsoluteSize
         if size.X<=1 or size.Y<=1 then error("empty button") end
         return pos.X+size.X/2,pos.Y+size.Y/2
     end)
     if not ok then log("VOTE_METHOD","button bounds unavailable");return false end
-    return pointerClick(x,y,method,b)
+    local function valid()
+        if stillPending and not stillPending() then return false end
+        if not screen.Enabled or not b.Visible then return false end
+        local pos,size=b.AbsolutePosition,b.AbsoluteSize
+        return size.X>1 and size.Y>1 and math.abs(pos.X+size.X/2-x)<1 and math.abs(pos.Y+size.Y/2-y)<1
+    end
+    return pointerClick(x,y,method,b,valid)
 end
-function adapter.vote(mode,attempt)
+function adapter.vote(mode,attempt,stillPending)
     if not controller or not controller.running then return false end
     local screen=playerGui:FindFirstChild("ModeSelectGui")
     local panel=screen and screen:FindFirstChild("Panel")
@@ -263,12 +283,12 @@ function adapter.vote(mode,attempt)
     if not b or not b:IsA("GuiButton") or not b.Visible or not screen.Enabled then
         log("VOTE_BUTTON","not ready");return false
     end
-    -- Different attempts use different mechanisms; an attempted click is not
-    -- considered a confirmed vote until the server emits the local Voted event.
+    -- An injected click is not proof; only a Voted event confirms a vote.
     local methods=attempt==1 and {"vim","mouse","connections"}
         or (attempt==2 and {"mouse","connections","vim"} or {"connections","vim","mouse"})
     for _,method in ipairs(methods) do
-        local fired=method=="connections" and safeSignalVote(b) or (method~="connections" and clickVoteButton(b,method))
+        if not controller.running or (stillPending and not stillPending()) then return false end
+        local fired=method=="connections" and safeSignalVote(b) or (method~="connections" and clickVoteButton(b,screen,method,stillPending))
         log("VOTE_METHOD",method.." attempted="..tostring(fired))
         if fired then return true end
     end
@@ -355,25 +375,37 @@ function adapter.selectPiece(id)
     local detector=hitbox and hitbox:FindFirstChildOfClass("ClickDetector") or part:FindFirstChildOfClass("ClickDetector")
     return clickDetector(detector,"piece "..id)
 end
-function adapter.retryPiece(id)
+function adapter.retryPiece(id,stillPending)
     local part=pieceFor(id);local camera=Workspace.CurrentCamera
     if not part or not camera then log("RETRY_GUARD","piece or camera missing");return false end
-    local ok,x,y=pcall(function()
-        local screen,onScreen=camera:WorldToScreenPoint(part.Position)
-        if not onScreen or screen.Z<=0 then error("piece not on screen") end
-        local params=RaycastParams.new()
-        params.FilterType=Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances={player.Character,camera}
-        local origin=camera.CFrame.Position
-        local hit=Workspace:Raycast(origin,(part.Position-origin)*1.02,params)
-        if not hit or not hit.Instance or (hit.Instance~=part and not safeDescendant(hit.Instance,part)) then error("piece occluded") end
-        return screen.X,screen.Y
-    end)
-    if not ok then log("RETRY_GUARD","piece is not verified visible or raycast unavailable");return false end
-    -- Only one physical retry is made, and only while the same selection is
-    -- still awaiting confirmation. Never retry a destination click blindly.
-    if pointerClick(x,y,"vim",nil) then return true end
-    return pointerClick(x,y,"mouse",nil)
+    local function projected()
+        local ok,screen,onScreen=pcall(function() return camera:WorldToScreenPoint(part.Position) end)
+        if not ok or not screen then return nil,"projection_failed" end
+        if not onScreen or screen.Z<=0 then return nil,"offscreen" end
+        local hitOk,hit=pcall(function()
+            local params=RaycastParams.new()
+            params.FilterType=Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances={player.Character,camera}
+            local origin=camera.CFrame.Position
+            return Workspace:Raycast(origin,(part.Position-origin)*1.02,params)
+        end)
+        if not hitOk then return nil,"raycast_error" end
+        if not hit or not hit.Instance then return nil,"raycast_no_hit" end
+        if hit.Instance~=part and not safeDescendant(hit.Instance,part) then return nil,"raycast_other_object" end
+        return screen
+    end
+    local point,reason=projected()
+    if not point then log("RETRY_GUARD",reason);return false end
+    local function valid()
+        if stillPending and not stillPending() then return false end
+        if Workspace.CurrentCamera~=camera or pieceFor(id)~=part then return false end
+        local current,why=projected()
+        if not current then log("RETRY_GUARD",why);return false end
+        return math.abs(current.X-point.X)<2 and math.abs(current.Y-point.Y)<2
+    end
+    if pointerClick(point.X,point.Y,"vim",nil,valid) then return true end
+    if stillPending and not stillPending() then return false end
+    return pointerClick(point.X,point.Y,"mouse",nil,valid)
 end
 function adapter.clickCell(row,col)
     if not model or not cells or not adapter.isSeated() then return false end

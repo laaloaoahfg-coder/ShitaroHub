@@ -69,7 +69,7 @@ new("ImageButton","ClassicButton",panel,{Visible=true})
 local activeGui=new("ScreenGui","ShitaroMenuOnly",pg)
 local page=new("Frame","checkers",activeGui)
 local players={LocalPlayer=localPlayer}
-local services={Workspace=world,ReplicatedStorage=rep,HttpService={},UserInputService={}}
+local services={Workspace=world,ReplicatedStorage=rep,HttpService={},UserInputService={},RunService={RenderStepped={Wait=function() end}}}
 game={PlaceId=75526590957446};function game:GetService(n) return assert(services[n]) end
 local clicks,voteCalls={},0
 function fireclickdetector(d) clicks[#clicks+1]=d end
