@@ -123,8 +123,8 @@ return function(ctx)
             actuator=Instance.new("AngularVelocity")
             actuator.Name="ShitaroContactPush";actuator.Attachment0=attachment
             actuator.RelativeTo=Enum.ActuatorRelativeTo.World
-            actuator.AngularVelocity=Vector3.new(0,80,0)
-            actuator.MaxTorque=2000000;actuator.Parent=root
+            actuator.AngularVelocity=Vector3.new(0,160,0)
+            actuator.MaxTorque=10000000;actuator.Parent=root
         end)
         if not ok then
             if actuator then pcall(function() actuator:Destroy() end) end
@@ -135,6 +135,10 @@ return function(ctx)
             return nil
         end
         return {root=root,attachment=attachment,actuator=actuator,original=original}
+    end
+    function contactAdapter.spinValid(state)
+        return state.root and state.root.Parent and state.actuator and state.actuator.Parent==state.root
+            and state.attachment and state.attachment.Parent==state.root
     end
     function contactAdapter.stopSpin(state)
         if state.actuator then pcall(function() state.actuator:Destroy() end) end
@@ -158,11 +162,11 @@ return function(ctx)
         en={ ["movement.panel"]="movement",["movement.speed"]="fast walk",
             ["movement.speedValue"]="walk speed",["movement.jump"]="long jump",
             ["movement.jumpValue"]="jump power",["movement.fall"]="slow fall",
-            ["movement.fallValue"]="fall gravity",["movement.contact"]="touch push (test)",["movement.hint"]="Touch push may spin you too." },
+            ["movement.fallValue"]="fall gravity",["movement.contact"]="touch push (test)",["movement.spin"]="always spin",["movement.hint"]="Spinning may throw you too." },
         ru={ ["movement.panel"]="движение",["movement.speed"]="быстрая ходьба",
             ["movement.speedValue"]="скорость",["movement.jump"]="дальний прыжок",
             ["movement.jumpValue"]="сила прыжка",["movement.fall"]="плавное падение",
-            ["movement.fallValue"]="сила падения",["movement.contact"]="отталкивание (тест)",["movement.hint"]="Отталкивание может вращать и вас." },
+            ["movement.fallValue"]="сила падения",["movement.contact"]="отталкивание (тест)",["movement.spin"]="крутиться всегда",["movement.hint"]="Вращение может отбросить и вас." },
     }
     for lang,items in pairs(strings) do
         for key,value in pairs(items) do ctx.locale[lang][key]=value end
@@ -170,7 +174,7 @@ return function(ctx)
 
     local scroll=ctx.pageScroll(ctx.tabs[4].page,"MovementScroll")
     ctx.panelWidths[scroll]=350
-    local card=ctx.previewPanel(scroll,"movement.panel",1,8)
+    local card=ctx.previewPanel(scroll,"movement.panel",1,9)
     local function toggle(index,labelKey,field)
         local row,label=ctx.previewRow(card,index,"",true)
         ctx.localize(label,labelKey)
@@ -186,6 +190,7 @@ return function(ctx)
         connect(hit.Activated,function()
             local on
             if field=="contact" then on=not contact.enabled;contact.setEnabled(on)
+            elseif field=="alwaysSpin" then on=not contact.alwaysEnabled;contact.setAlways(on)
             else on=not movement[field.."Enabled"];movement.setEnabled(field,on) end
             ctx.animate(track,{BackgroundColor3=on and colors.accent or Color3.new(1,1,1),
                 BackgroundTransparency=on and 0.35 or 0.86})
@@ -211,7 +216,8 @@ return function(ctx)
     toggle(5,"movement.fall","fall")
     slider(6,"movement.fallValue","fallPercent",10,100,"%")
     toggle(7,"movement.contact","contact")
-    local _,hint=ctx.previewRow(card,8,"",true)
+    toggle(8,"movement.spin","alwaysSpin")
+    local _,hint=ctx.previewRow(card,9,"",true)
     hint.Size=UDim2.new(1,-24,1,0);hint.TextSize=11;hint.TextWrapped=true
     ctx.localize(hint,"movement.hint")
     ctx.layoutPreview()
