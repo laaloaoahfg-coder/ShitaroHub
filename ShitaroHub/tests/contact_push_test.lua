@@ -61,4 +61,14 @@ local attempts=0;adapter.startSpin=function() attempts=attempts+1;return nil end
 local e=create(adapter);time=30;e.setAlways(true);assert(attempts==1)
 time=30.5;e.step();assert(attempts==1);time=31.1;e.step();assert(attempts==2)
 e.shutdown()
+-- Failed pulse updates release physics and observe the retry delay.
+local updates=0;local failedStops=0
+adapter.startSpin=function(r) return {root=r,valid=true} end
+adapter.stopSpin=function(state) failedStops=failedStops+1;state.valid=false end
+adapter.setSpinActive=function() updates=updates+1;error("actuator removed") end
+time=40;local f=create(adapter);f.setAlways(true)
+time=40.21;f.step();assert(updates==1 and failedStops==1,"pulse failure cleans up")
+time=40.5;f.step();assert(updates==1,"no immediate retry after pulse failure")
+time=41.22;f.step();time=41.44;f.step();assert(updates==2 and failedStops==2,"pulse failure retry is bounded")
+f.shutdown();time=42;f.step();assert(updates==2,"shutdown cannot resume pulses")
 io.write("PASS: opt-in contact push filtering, cooldown, suspension, respawn and cleanup\n")

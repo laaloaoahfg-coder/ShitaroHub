@@ -145,8 +145,8 @@ return function(ctx)
             actuator=Instance.new("AngularVelocity")
             actuator.Name="ShitaroContactPush";actuator.Attachment0=attachment
             actuator.RelativeTo=Enum.ActuatorRelativeTo.World
-            actuator.AngularVelocity=Vector3.new(0,60,0)
-            actuator.MaxTorque=2000000;actuator.Parent=root
+            actuator.AngularVelocity=Vector3.new(0,600,0)
+            actuator.MaxTorque=10000000;actuator.Parent=root
             -- Align only the upright axis; do not resist yaw/spinning.
             upright=Instance.new("AlignOrientation")
             upright.Name="ShitaroSpinUpright";upright.Attachment0=attachment
@@ -174,6 +174,9 @@ return function(ctx)
         return state.root and state.root.Parent and state.actuator and state.actuator.Parent==state.root
             and state.attachment and state.attachment.Parent==state.root
             and state.upright and state.upright.Parent==state.root
+    end
+    function contactAdapter.setSpinActive(state,on)
+        state.actuator.AngularVelocity=Vector3.new(0,on and 600 or 0,0)
     end
     function contactAdapter.stopSpin(state)
         if state.upright then pcall(function() state.upright:Destroy() end) end

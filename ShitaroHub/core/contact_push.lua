@@ -4,10 +4,11 @@ return function(adapter)
     local c={enabled=false,alwaysEnabled=false}
     local character,humanoid,root,disconnect,spin,spinMode
     local nextAllowed,spinUntil,alwaysRetryAt=0,0,0
+    local spinStarted,pulseOn=0,nil
     local closed=false
     local function stopSpin()
         if spin then pcall(adapter.stopSpin,spin);spin=nil end
-        spinMode=nil;spinUntil=0
+        spinMode=nil;spinUntil=0;spinStarted=0;pulseOn=nil
     end
     local function stopWatching()
         if disconnect then pcall(disconnect);disconnect=nil end
@@ -20,7 +21,7 @@ return function(adapter)
         stopSpin()
         local ok,result=pcall(adapter.startSpin,root,humanoid)
         if not ok or not result then return false end
-        spin=result;spinMode=mode
+        spin=result;spinMode=mode;spinStarted=now;pulseOn=true
         if mode=="contact" then spinUntil=now+0.6 end
         return true
     end
@@ -76,6 +77,18 @@ return function(adapter)
             end
         elseif spinMode=="always" or (spinMode=="contact" and now>=spinUntil) then
             stopSpin()
+        end
+        if spin and adapter.setSpinActive then
+            -- Periodic target changes, not a guarantee of actual angular speed.
+            -- Use elapsed time, not queued tasks, so shutdown cannot restart it.
+            local on=((now-spinStarted)%0.3)<0.2
+            if on~=pulseOn then
+                local ok=pcall(adapter.setSpinActive,spin,on)
+                if ok then pulseOn=on else
+                    stopSpin()
+                    if c.alwaysEnabled then alwaysRetryAt=now+1 end
+                end
+            end
         end
     end
     function c.setEnabled(enabled)

@@ -98,9 +98,11 @@ otherRoot.Position=Vector3.new(30,0,0);root.Touched:Fire(otherRoot);assert(#crea
 otherRoot.Position=Vector3.new(2,0,0);hum.SeatPart={};root.Touched:Fire(otherRoot);assert(#created==objectsBeforeContact,"seated avatar ignored");hum.SeatPart=nil
 root.Touched:Fire(otherRoot)
 local contactAttachment,contactSpin,contactUpright=created[#created-2],created[#created-1],created[#created]
-assert(contactSpin.ClassName=="AngularVelocity" and contactSpin.AngularVelocity.Y==60 and contactUpright.ClassName=="AlignOrientation"
+assert(contactSpin.ClassName=="AngularVelocity" and contactSpin.AngularVelocity.Y==600 and contactUpright.ClassName=="AlignOrientation"
     and contactUpright.PrimaryAxis.Y==1 and hum.AutoRotate==false and not otherRoot.lastImpulse,"unowned contact creates stabilized spin")
-mockTime=0.61;root.AssemblyAngularVelocity=Vector3.new(3,60,4);heartbeat:Fire()
+mockTime=0.21;heartbeat:Fire();assert(contactSpin.AngularVelocity.Y==0,"contact pulse turns off")
+mockTime=0.31;heartbeat:Fire();assert(contactSpin.AngularVelocity.Y==600,"contact pulse turns back on")
+mockTime=0.61;root.AssemblyAngularVelocity=Vector3.new(3,600,4);heartbeat:Fire()
 assert(contactAttachment.destroyed and contactSpin.destroyed and contactUpright.destroyed and hum.AutoRotate==true
     and root.AssemblyAngularVelocity.Y==0 and root.AssemblyAngularVelocity.X==3,"contact spin and stabilizer are cleaned up")
 _G.isnetworkowner=function(target) return target==otherRoot end
@@ -147,11 +149,13 @@ assert(oldContactSpin.ClassName=="AngularVelocity" and oldContactSpin.Parent==ro
 -- Continuous mode replaces the transient spin without stacking actuators.
 always.Activated:Fire();local alwaysSpin,alwaysUpright=created[#created-1],created[#created]
 assert(oldContactSpin.destroyed and oldContactUpright.destroyed and alwaysSpin.ClassName=="AngularVelocity" and alwaysSpin.Parent==root)
-assert(alwaysSpin.AngularVelocity.Y==60 and alwaysUpright.PrimaryAxis.Y==1 and hum.AutoRotate==false,"continuous mode uses a faster upright spin")
+assert(alwaysSpin.AngularVelocity.Y==600 and alwaysUpright.PrimaryAxis.Y==1 and hum.AutoRotate==false,"continuous mode uses a faster upright spin")
+mockTime=5.21;heartbeat:Fire();assert(alwaysSpin.AngularVelocity.Y==0,"always pulse turns off")
+mockTime=5.31;heartbeat:Fire();assert(alwaysSpin.AngularVelocity.Y==600,"always pulse turns on")
 local countBeforeSpinTouch=#created;mockTime=10;root.Touched:Fire(otherRoot);heartbeat:Fire()
 assert(#created==countBeforeSpinTouch and not alwaysSpin.destroyed,"continuous mode ignores touch-triggered duplicates")
 contact.Activated:Fire();assert(not alwaysSpin.destroyed,"continuous mode independent of touch toggle")
-root.AssemblyAngularVelocity=Vector3.new(0,60,0)
+root.AssemblyAngularVelocity=Vector3.new(0,600,0)
 always.Activated:Fire();assert(alwaysSpin.destroyed and alwaysUpright.destroyed and hum.AutoRotate==true and root.AssemblyAngularVelocity.Y==0,"turning off stops continuous spin immediately")
 -- Free camera and seating release the stabilizer and restore AutoRotate.
 always.Activated:Fire();alwaysSpin,alwaysUpright=created[#created-1],created[#created]
@@ -170,7 +174,7 @@ local failedAttachment,failedActuator=created[#created-1],created[#created]
 assert(failedAttachment.destroyed and failedActuator.destroyed and hum.AutoRotate==true,"failed setup rolls back")
 failClass=nil;mockTime=12;heartbeat:Fire();alwaysSpin,alwaysUpright=created[#created-1],created[#created]
 assert(alwaysSpin.Parent==root and alwaysUpright.Parent==root and hum.AutoRotate==false,"spin retries after unsupported setup")
-root.AssemblyAngularVelocity=Vector3.new(0,60,0)
+root.AssemblyAngularVelocity=Vector3.new(0,600,0)
 gui.Destroying:Fire()
 assert(alwaysSpin.destroyed and alwaysUpright.destroyed and hum.AutoRotate==true and root.AssemblyAngularVelocity.Y==0,"closing hub clears continuous spin")
 assert(hum.WalkSpeed==16 and hum.JumpPower==50,"closing hub restores movement even after shared connections disconnect")
