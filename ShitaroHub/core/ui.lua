@@ -209,7 +209,6 @@ local locale = {
         ["tab.misc"] = "misc",
         ["tab.skins"] = "skins",
         ["tab.settings"] = "settings",
-        ["tab.checkers"] = "checkers",
         ["header.config"] = "No config",
         ["header.profile"] = "global",
         ["close.title"] = "disable cheat",
@@ -256,7 +255,6 @@ local locale = {
         ["tab.misc"] = "прочее",
         ["tab.skins"] = "скины",
         ["tab.settings"] = "настройки",
-        ["tab.checkers"] = "шашки",
         ["header.config"] = "нет конфига",
         ["header.profile"] = "глобальный",
         ["close.title"] = "отключение чита",
@@ -651,9 +649,6 @@ local navEntries = {
     { "skins", "skins" },
     { "settings", "sliders" },
 }
-if game.PlaceId == 75526590957446 then
-    table.insert(navEntries, { "checkers", "layers" })
-end
 for index, entry in ipairs(navEntries) do
     local button = make("TextButton", {
         Name = entry[1],
@@ -2647,7 +2642,7 @@ do
         "modules/aim.lua",
         "modules/trigger.lua",
         "modules/skins.lua",
-        "modules/checkers.lua",
+        "modules/movement.lua",
     }) do
         if not Loader then
             warn("[shitaro] no loader, module skipped: " .. path)
