@@ -16,28 +16,33 @@ local function new(class,props,parent)
     objects[#objects+1]=obj
     return obj
 end
-local created={}
-Instance={new=function(class) local o=new(class,{},nil);created[#created+1]=o;return o end}
+local created={};local failClass
+warn=function() end
+Instance={new=function(class) if class==failClass then error("unsupported "..class) end
+    local o=new(class,{},nil);created[#created+1]=o;return o end}
 UDim2={new=function(...) return {...} end,fromOffset=function(...) return {...} end,fromScale=function(...) return {...} end}
 UDim={new=function(...) return {...} end}
+CFrame={Angles=function(...) return {...} end}
 Vector2={new=function(...) return {...} end}
 local vector={}
 vector.__index=function(v,k) if k=="Magnitude" then return math.sqrt(v.X*v.X+v.Y*v.Y+v.Z*v.Z) end end
 vector.__sub=function(a,b) return setmetatable({X=a.X-b.X,Y=a.Y-b.Y,Z=a.Z-b.Z},vector) end
 Vector3={new=function(x,y,z) return setmetatable({X=x,Y=y,Z=z},vector) end}
 Color3={new=function(...) return {...} end}
-Enum={HumanoidStateType={Freefall="Freefall",Running="Running"},Material={Air="Air",Ground="Ground"},ActuatorRelativeTo={World="World"}}
+Enum={HumanoidStateType={Freefall="Freefall",Running="Running"},Material={Air="Air",Ground="Ground"},ActuatorRelativeTo={World="World"},
+    AlignType={PrimaryAxisParallel="PrimaryAxisParallel"},OrientationAlignmentMode={OneAttachment="OneAttachment"}}
 local world={Gravity=200}
 game={GetService=function(_,n) assert(n=="Workspace");return world end}
 local function character()
     local char={Parent={},DescendantAdded=signal()}
     function char:IsA(k) return k=="Model" end
     local hum={Parent=char,Health=100,WalkSpeed=16,JumpPower=50,JumpHeight=7.2,UseJumpPower=true,
-        FloorMaterial=Enum.Material.Ground,State=Enum.HumanoidStateType.Running}
+        FloorMaterial=Enum.Material.Ground,State=Enum.HumanoidStateType.Running,AutoRotate=true}
     function hum:GetState() return self.State end
     local root={Parent=char,AssemblyMass=10,AssemblyLinearVelocity={Y=0},Anchored=false,
         AssemblyAngularVelocity=Vector3.new(0,0,0),Position=Vector3.new(0,0,0),Touched=signal()}
     function root:IsA(k) return k=="BasePart" end
+    function root:ApplyImpulse(impulse) self.lastImpulse=impulse end
     function root:FindFirstAncestorOfClass() return nil end
     function char:GetDescendants() return {root} end
     function char:FindFirstChildOfClass(k) if k=="Humanoid" then return hum end end
@@ -84,7 +89,7 @@ sliders.Movementspeed.set(200,true);speed.Activated:Fire();assert(hum.WalkSpeed=
 sliders.Movementspeed.set(65,true);assert(hum.WalkSpeed==65)
 sliders.MovementjumpPower.set(80,true);jump.Activated:Fire();assert(hum.JumpPower==80)
 fall.Activated:Fire();assert(#created==0,"ground does not create a force")
--- Only close, living other players trigger the local timed actuator.
+-- Contact mode does not spin the local character when ownership is absent.
 local otherChar,otherHum,otherRoot=character();local otherPlayer={Character=otherChar};playersByCharacter[otherChar]=otherPlayer
 otherRoot.Position=Vector3.new(2,0,0)
 contact.Activated:Fire();local objectsBeforeContact=#created
@@ -92,13 +97,18 @@ root.Touched:Fire(root);assert(#created==objectsBeforeContact,"own character ign
 otherRoot.Position=Vector3.new(30,0,0);root.Touched:Fire(otherRoot);assert(#created==objectsBeforeContact,"distant player ignored")
 otherRoot.Position=Vector3.new(2,0,0);hum.SeatPart={};root.Touched:Fire(otherRoot);assert(#created==objectsBeforeContact,"seated avatar ignored");hum.SeatPart=nil
 root.Touched:Fire(otherRoot)
-local spinAttachment,spinForce=created[#created-1],created[#created]
-assert(spinAttachment.ClassName=="Attachment" and spinForce.ClassName=="AngularVelocity" and spinForce.Parent==root)
-assert(spinForce.MaxTorque==10000000 and spinForce.AngularVelocity.Y==160 and otherRoot.AssemblyAngularVelocity.Y==0,"only local character gets actuator")
-root.AssemblyAngularVelocity=Vector3.new(3,160,4);mockTime=0.51;heartbeat:Fire()
-assert(spinForce.destroyed and spinAttachment.destroyed and root.AssemblyAngularVelocity.Y==0 and root.AssemblyAngularVelocity.X==3,"spin clears and does not leave local avatar spinning")
-root.Touched:Fire(otherRoot);assert(#created==objectsBeforeContact+2,"contact cooldown")
-contact.Activated:Fire();mockTime=2;root.Touched:Fire(otherRoot);assert(#created==objectsBeforeContact+2,"disabled contact unsubscribes")
+assert(#created==objectsBeforeContact and not otherRoot.lastImpulse,"no local spin or unowned impulse")
+_G.isnetworkowner=function(target) return target==otherRoot end
+mockTime=1.1;root.Touched:Fire(otherRoot)
+assert(otherRoot.lastImpulse and otherRoot.lastImpulse.X==800 and otherRoot.lastImpulse.Y==200
+    and #created==objectsBeforeContact,"owned target receives directional impulse without local spin")
+otherRoot.lastImpulse=nil;root.Touched:Fire(otherRoot);assert(not otherRoot.lastImpulse,"owned impulses respect cooldown")
+_G.isnetworkowner=function() return false end
+mockTime=2.2;root.Touched:Fire(otherRoot);assert(not otherRoot.lastImpulse and #created==objectsBeforeContact,"unowned target is untouched")
+_G.isnetworkowner=function() error("ownership check failed") end
+mockTime=3.3;root.Touched:Fire(otherRoot);assert(not otherRoot.lastImpulse and #created==objectsBeforeContact,"failed ownership check is safe")
+_G.isnetworkowner=nil
+contact.Activated:Fire();mockTime=4.4;root.Touched:Fire(otherRoot);assert(#created==objectsBeforeContact,"disabled contact unsubscribes")
 hum.State=Enum.HumanoidStateType.Freefall;hum.FloorMaterial=Enum.Material.Air;root.AssemblyLinearVelocity={Y=-20}
 heartbeat:Fire()
 local attachment,force=created[#created-1],created[#created]
@@ -122,21 +132,37 @@ speed.Activated:Fire();jump.Activated:Fire();fall.Activated:Fire();force=created
 assert(hum.WalkSpeed==65 and hum.JumpPower==80 and force.Parent==root)
 contact.Activated:Fire();local oldCreated=#created
 oldRoot.Touched:Fire(otherRoot);assert(#created==oldCreated,"old character has no active contact listener")
-mockTime=4;root.Touched:Fire(otherRoot);local finalSpin=created[#created]
-assert(finalSpin.ClassName=="AngularVelocity" and finalSpin.Parent==root)
--- Continuous mode replaces the transient spin without stacking actuators.
-always.Activated:Fire();local alwaysSpin=created[#created]
-assert(finalSpin.destroyed and alwaysSpin.ClassName=="AngularVelocity" and alwaysSpin.Parent==root)
+mockTime=5;root.Touched:Fire(otherRoot);assert(#created==oldCreated,"contact never spins the user")
+-- Continuous mode is independent of the contact switch.
+always.Activated:Fire();local alwaysSpin,alwaysUpright=created[#created-1],created[#created]
+assert(alwaysSpin.ClassName=="AngularVelocity" and alwaysSpin.Parent==root)
+assert(alwaysSpin.AngularVelocity.Y==14 and alwaysUpright.PrimaryAxis.Y==1 and hum.AutoRotate==false,"continuous mode uses a gentler upright spin")
 local countBeforeSpinTouch=#created;mockTime=10;root.Touched:Fire(otherRoot);heartbeat:Fire()
 assert(#created==countBeforeSpinTouch and not alwaysSpin.destroyed,"continuous mode ignores touch-triggered duplicates")
 contact.Activated:Fire();assert(not alwaysSpin.destroyed,"continuous mode independent of touch toggle")
-root.AssemblyAngularVelocity=Vector3.new(0,160,0)
-always.Activated:Fire();assert(alwaysSpin.destroyed and root.AssemblyAngularVelocity.Y==0,"turning off stops continuous spin immediately")
-always.Activated:Fire();alwaysSpin=created[#created];assert(alwaysSpin.Parent==root)
-root.AssemblyAngularVelocity=Vector3.new(0,160,0)
+root.AssemblyAngularVelocity=Vector3.new(0,14,0)
+always.Activated:Fire();assert(alwaysSpin.destroyed and alwaysUpright.destroyed and hum.AutoRotate==true and root.AssemblyAngularVelocity.Y==0,"turning off stops continuous spin immediately")
+-- Free camera and seating release the stabilizer and restore AutoRotate.
+always.Activated:Fire();alwaysSpin,alwaysUpright=created[#created-1],created[#created]
+uiState.freeCamera=true;heartbeat:Fire();assert(alwaysSpin.destroyed and alwaysUpright.destroyed and hum.AutoRotate==true)
+uiState.freeCamera=false;heartbeat:Fire();alwaysSpin,alwaysUpright=created[#created-1],created[#created]
+hum.SeatPart={};heartbeat:Fire();assert(alwaysSpin.destroyed and alwaysUpright.destroyed and hum.AutoRotate==true)
+hum.SeatPart=nil;heartbeat:Fire();alwaysSpin,alwaysUpright=created[#created-1],created[#created]
+local previousHum=hum;char,hum,root=character();player.Character=char;playersByCharacter[char]=player;heartbeat:Fire()
+assert(alwaysSpin.destroyed and alwaysUpright.destroyed and previousHum.AutoRotate==true and hum.AutoRotate==false,"respawn cleans up old spin")
+alwaysSpin,alwaysUpright=created[#created-1],created[#created]
+-- Respect a different AutoRotate value written by the game while spinning.
+hum.AutoRotate=true;always.Activated:Fire();assert(hum.AutoRotate==true and alwaysUpright.destroyed)
+-- Unsupported stabilizer must roll back both partial objects and AutoRotate.
+failClass="AlignOrientation";always.Activated:Fire()
+local failedAttachment,failedActuator=created[#created-1],created[#created]
+assert(failedAttachment.destroyed and failedActuator.destroyed and hum.AutoRotate==true,"failed setup rolls back")
+failClass=nil;mockTime=12;heartbeat:Fire();alwaysSpin,alwaysUpright=created[#created-1],created[#created]
+assert(alwaysSpin.Parent==root and alwaysUpright.Parent==root and hum.AutoRotate==false,"spin retries after unsupported setup")
+root.AssemblyAngularVelocity=Vector3.new(0,14,0)
 gui.Destroying:Fire()
-assert(alwaysSpin.destroyed and root.AssemblyAngularVelocity.Y==0,"closing hub clears continuous spin")
-assert(force.destroyed and hum.WalkSpeed==16 and hum.JumpPower==50,"closing hub restores movement even after shared connections disconnect")
+assert(alwaysSpin.destroyed and alwaysUpright.destroyed and hum.AutoRotate==true and root.AssemblyAngularVelocity.Y==0,"closing hub clears continuous spin")
+assert(hum.WalkSpeed==16 and hum.JumpPower==50,"closing hub restores movement even after shared connections disconnect")
 heartbeat:Fire();assert(hum.WalkSpeed==16)
 os.clock=savedClock
 io.write("PASS: movement UI, sliders, character physics, respawn and shutdown integration\n")

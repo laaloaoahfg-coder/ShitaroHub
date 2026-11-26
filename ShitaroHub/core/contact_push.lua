@@ -1,13 +1,12 @@
--- Opt-in contact impulse and continuous spin. Never alters another character.
--- Both modes share one local actuator; the adapter owns subscriptions/physics.
+-- Opt-in ownership-checked contact impulse and independent local spin.
+-- The adapter owns subscriptions and physics; no ownership is forced.
 return function(adapter)
     local c={enabled=false,alwaysEnabled=false}
-    local character,humanoid,root,disconnect,spin,spinMode
-    local spinUntil,nextAllowed,alwaysRetryAt=0,0,0
+    local character,humanoid,root,disconnect,spin
+    local nextAllowed,alwaysRetryAt=0,0
     local closed=false
     local function stopSpin()
         if spin then pcall(adapter.stopSpin,spin);spin=nil end
-        spinMode=nil;spinUntil=0
     end
     local function stopWatching()
         if disconnect then pcall(disconnect);disconnect=nil end
@@ -16,21 +15,25 @@ return function(adapter)
         stopSpin();stopWatching()
         character,humanoid,root=nil,nil,nil
     end
-    local function startSpin(mode,now)
+    local function startSpin()
         stopSpin()
-        local ok,result=pcall(adapter.startSpin,root)
+        local ok,result=pcall(adapter.startSpin,root,humanoid)
         if not ok or not result then return false end
-        spin=result;spinMode=mode
-        if mode=="contact" then spinUntil=now+0.5 end
+        spin=result
         return true
     end
     local function touched(otherPart)
-        if closed or not c.enabled or c.alwaysEnabled or not root or adapter.suspended() then return end
+        if closed or not c.enabled or not root or adapter.suspended() then return end
         local char,h,r=adapter.resolve()
         if char~=character or h~=humanoid or r~=root or not adapter.canPush(h,r) then return end
         local now=adapter.now()
-        if now<nextAllowed or not adapter.isOtherPlayerPart(otherPart,r) then return end
-        if startSpin("contact",now) then nextAllowed=now+1 end
+        if now<nextAllowed then return end
+        local eligible,target=adapter.isOtherPlayerPart(otherPart,r)
+        if not eligible then return end
+        -- Never fall back to spinning our own character on touch: that can
+        -- throw the user instead. Rate-limit even failed/unavailable attempts.
+        nextAllowed=now+1
+        if adapter.tryOwnedPush and target then pcall(adapter.tryOwnedPush,target,r) end
     end
     function c.step()
         if closed then return end
@@ -60,18 +63,16 @@ return function(adapter)
             end
         end
         if c.alwaysEnabled then
-            if spinMode~="always" and now>=alwaysRetryAt then
-                if not startSpin("always",now) then alwaysRetryAt=now+1 end
+            if not spin and now>=alwaysRetryAt then
+                if not startSpin() then alwaysRetryAt=now+1 end
             end
-        elseif spinMode=="always" or (spinMode=="contact" and now>=spinUntil) then
+        elseif spin then
             stopSpin()
         end
     end
     function c.setEnabled(enabled)
         if closed then return end
         c.enabled=enabled==true
-        -- A contact-triggered spin must stop as soon as contact mode is off.
-        if not c.enabled and spinMode=="contact" then stopSpin() end
         c.step()
     end
     function c.setAlways(enabled)

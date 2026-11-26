@@ -67,9 +67,8 @@ return function(ctx)
     end
     local movement=controllerFactory(adapter)
 
-    -- A short, opt-in local spin on physical contact. It does not write to
-    -- other characters or send fake touch events; server physics decides
-    -- whether a collision actually pushes anyone.
+    -- Contact impulses are attempted only with positively verified local
+    -- ownership. Continuous spin is a separate, local-only experiment.
     local contactAdapter={}
     contactAdapter.now=os.clock
     contactAdapter.suspended=adapter.suspended
@@ -91,8 +90,9 @@ return function(ctx)
                     if other==player or other.Character~=ancestor then return false end
                     local h=ancestor:FindFirstChildOfClass("Humanoid")
                     local target=ancestor:FindFirstChild("HumanoidRootPart")
-                    return h~=nil and h.Health>0 and target~=nil and target:IsA("BasePart")
-                        and not target.Anchored and (target.Position-localRoot.Position).Magnitude<=10
+                    if h and h.Health>0 and target and target:IsA("BasePart") and not target.Anchored
+                        and (target.Position-localRoot.Position).Magnitude<=10 then return true,target end
+                    return false
                 end
             end
             ancestor=ancestor.Parent
@@ -114,42 +114,83 @@ return function(ctx)
             for _,link in ipairs(links) do pcall(function() link:Disconnect() end) end
         end
     end
-    function contactAdapter.startSpin(root)
-        local attachment,actuator
+    -- A direct impulse is only attempted when the executor can positively
+    -- verify local ownership of the other player's assembly. Most player
+    -- characters are owned elsewhere; do not force or assume ownership.
+    function contactAdapter.tryOwnedPush(target,localRoot)
+        if type(isnetworkowner)~="function" then return false end
+        local ok,owned=pcall(isnetworkowner,target)
+        if not ok or owned~=true or not target.Parent or target.Anchored then return false end
+        local mass=target.AssemblyMass
+        if type(mass)~="number" or mass<=0 or mass>10000 then return false end
+        local delta=target.Position-localRoot.Position
+        local length=math.sqrt(delta.X*delta.X+delta.Z*delta.Z)
+        if length<0.05 then return false end
+        local impulse=Vector3.new(delta.X/length*mass*80,mass*20,delta.Z/length*mass*80)
+        local did=pcall(function() target:ApplyImpulse(impulse) end)
+        return did -- invocation only; server replication is not guaranteed
+    end
+    function contactAdapter.startSpin(root,hum)
+        local attachment,actuator,upright
         local original=root.AssemblyAngularVelocity
+        local oldAutoRotate=hum.AutoRotate
         local ok,err=pcall(function()
+            -- Keep the humanoid's facing controller from fighting the spin.
+            hum.AutoRotate=false
             attachment=Instance.new("Attachment")
-            attachment.Name="ShitaroContactAttachment";attachment.Parent=root
+            attachment.Name="ShitaroContactAttachment"
+            -- Attachment's primary X axis points along the avatar's local Y.
+            attachment.CFrame=CFrame.Angles(0,0,math.pi/2)
+            attachment.Parent=root
             actuator=Instance.new("AngularVelocity")
             actuator.Name="ShitaroContactPush";actuator.Attachment0=attachment
             actuator.RelativeTo=Enum.ActuatorRelativeTo.World
-            actuator.AngularVelocity=Vector3.new(0,160,0)
-            actuator.MaxTorque=10000000;actuator.Parent=root
+            actuator.AngularVelocity=Vector3.new(0,14,0)
+            actuator.MaxTorque=2000000;actuator.Parent=root
+            -- Align only the upright axis; do not resist yaw/spinning.
+            upright=Instance.new("AlignOrientation")
+            upright.Name="ShitaroSpinUpright";upright.Attachment0=attachment
+            upright.Mode=Enum.OrientationAlignmentMode.OneAttachment
+            upright.AlignType=Enum.AlignType.PrimaryAxisParallel
+            upright.PrimaryAxis=Vector3.new(0,1,0)
+            upright.RigidityEnabled=false;upright.Responsiveness=40
+            upright.MaxTorque=2000000;upright.MaxAngularVelocity=50
+            upright.Parent=root
         end)
         if not ok then
+            if upright then pcall(function() upright:Destroy() end) end
             if actuator then pcall(function() actuator:Destroy() end) end
             if attachment then pcall(function() attachment:Destroy() end) end
+            pcall(function() if hum.Parent and hum.AutoRotate==false then hum.AutoRotate=oldAutoRotate end end)
             if not contactWarning then
                 contactWarning=true;warn("[shitaro/movement] contact push unavailable: "..tostring(err))
             end
             return nil
         end
-        return {root=root,attachment=attachment,actuator=actuator,original=original}
+        return {root=root,humanoid=hum,oldAutoRotate=oldAutoRotate,
+            attachment=attachment,actuator=actuator,upright=upright,original=original}
     end
     function contactAdapter.spinValid(state)
         return state.root and state.root.Parent and state.actuator and state.actuator.Parent==state.root
             and state.attachment and state.attachment.Parent==state.root
+            and state.upright and state.upright.Parent==state.root
     end
     function contactAdapter.stopSpin(state)
+        if state.upright then pcall(function() state.upright:Destroy() end) end
         if state.actuator then pcall(function() state.actuator:Destroy() end) end
         if state.attachment then pcall(function() state.attachment:Destroy() end) end
+        pcall(function()
+            if state.humanoid and state.humanoid.Parent and state.humanoid.AutoRotate==false then
+                state.humanoid.AutoRotate=state.oldAutoRotate
+            end
+        end)
         -- Do not leave our own character spinning. Preserve X/Z and only
         -- correct a high positive Y spin consistent with our actuator.
         pcall(function()
             local r=state.root
             if r and r.Parent and not r.Anchored then
                 local v=r.AssemblyAngularVelocity
-                if v.Y>25 then
+                if v.Y>10 then
                     local oldY=math.max(-20,math.min(20,state.original.Y))
                     r.AssemblyAngularVelocity=Vector3.new(v.X,oldY,v.Z)
                 end
