@@ -15,6 +15,8 @@ local a={
 }
 local c=create(a)
 c.step();assert(hum.WalkSpeed==16 and hum.JumpPower==50 and not force,"disabled by default")
+assert(c.setValue("speed",200));c.setEnabled("speed",true);assert(hum.WalkSpeed==200)
+c.setEnabled("speed",false);assert(hum.WalkSpeed==16)
 assert(c.setValue("speed",45));c.setEnabled("speed",true);assert(hum.WalkSpeed==45)
 c.setValue("speed",70);c.step();assert(hum.WalkSpeed==70,"speed slider applies")
 -- The last game-provided value is restored, not a hard-coded default.
@@ -46,6 +48,6 @@ suspended=false;hum.WalkSpeed=70;c.step();assert(hum.WalkSpeed==70)
 c.shutdown();assert(hum.WalkSpeed==18 and hum.JumpPower==45 and not force,"shutdown restores and clears force")
 c.step();assert(hum.WalkSpeed==18,"shutdown is final")
 assert(not c.setValue("speed",0/0) and not c.setValue("x",1) and not c.setEnabled("x",true))
-local d=create(a);d.setValue("speed",10000);assert(d.speed==120);d.setValue("fallPercent",-100);assert(d.fallPercent==10)
+local d=create(a);d.setValue("speed",10000);assert(d.speed==200);d.setValue("fallPercent",-100);assert(d.fallPercent==10)
 d.shutdown()
 io.write("PASS: movement settings, external changes, jump modes, slow fall, free camera, respawn and shutdown\n")

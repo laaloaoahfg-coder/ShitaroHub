@@ -44,7 +44,7 @@ return function(adapter)
         end
         record.written=value
     end
-    local limits={speed={1,120},jumpPower={20,140},fallPercent={10,100}}
+    local limits={speed={1,200},jumpPower={20,140},fallPercent={10,100}}
     function c.setValue(name,value)
         local range=limits[name]
         if not range or type(value)~="number" or value~=value then return false end

@@ -4,10 +4,12 @@ return function(ctx)
     local RunService=ctx.RunService
     local Workspace=game:GetService("Workspace")
     local controllerFactory=ctx.Loader.module("core/movement_controller.lua")
+    local contactFactory=ctx.Loader.module("core/contact_push.lua")
     local make,connect,corner=ctx.make,ctx.connect,ctx.corner
     local colors=ctx.colors
     local fallRoot,fallAttachment,fallForce
     local fallWarning=false
+    local contactWarning=false
 
     local function clearFall()
         if fallForce then pcall(function() fallForce:Destroy() end) end
@@ -65,15 +67,102 @@ return function(ctx)
     end
     local movement=controllerFactory(adapter)
 
+    -- A short, opt-in local spin on physical contact. It does not write to
+    -- other characters or send fake touch events; server physics decides
+    -- whether a collision actually pushes anyone.
+    local contactAdapter={}
+    contactAdapter.now=os.clock
+    contactAdapter.suspended=adapter.suspended
+    function contactAdapter.resolve()
+        local h,r=adapter.resolve()
+        return h and player.Character or nil,h,r
+    end
+    function contactAdapter.canPush(h,r)
+        return h and h.Health>0 and not h.SeatPart and not h.PlatformStand and r and r.Parent and not r.Anchored
+    end
+    function contactAdapter.isOtherPlayerPart(part,localRoot)
+        if not part or not part.Parent or not part:IsA("BasePart") then return false end
+        local ancestor=part.Parent
+        for _=1,16 do
+            if not ancestor then return false end
+            if ancestor:IsA("Model") then
+                local other=ctx.Players:GetPlayerFromCharacter(ancestor)
+                if other then
+                    if other==player or other.Character~=ancestor then return false end
+                    local h=ancestor:FindFirstChildOfClass("Humanoid")
+                    local target=ancestor:FindFirstChild("HumanoidRootPart")
+                    return h~=nil and h.Health>0 and target~=nil and target:IsA("BasePart")
+                        and not target.Anchored and (target.Position-localRoot.Position).Magnitude<=10
+                end
+            end
+            ancestor=ancestor.Parent
+        end
+        return false
+    end
+    function contactAdapter.watch(char,onTouch)
+        local links,watched={},{}
+        local function add(part)
+            if watched[part] or not part:IsA("BasePart") then return end
+            -- Tools and weapons can be long and should not act as touch sensors.
+            if part:FindFirstAncestorOfClass("Tool") then return end
+            watched[part]=true
+            links[#links+1]=part.Touched:Connect(onTouch)
+        end
+        for _,part in ipairs(char:GetDescendants()) do add(part) end
+        links[#links+1]=char.DescendantAdded:Connect(add)
+        return function()
+            for _,link in ipairs(links) do pcall(function() link:Disconnect() end) end
+        end
+    end
+    function contactAdapter.startSpin(root)
+        local attachment,actuator
+        local original=root.AssemblyAngularVelocity
+        local ok,err=pcall(function()
+            attachment=Instance.new("Attachment")
+            attachment.Name="ShitaroContactAttachment";attachment.Parent=root
+            actuator=Instance.new("AngularVelocity")
+            actuator.Name="ShitaroContactPush";actuator.Attachment0=attachment
+            actuator.RelativeTo=Enum.ActuatorRelativeTo.World
+            actuator.AngularVelocity=Vector3.new(0,80,0)
+            actuator.MaxTorque=2000000;actuator.Parent=root
+        end)
+        if not ok then
+            if actuator then pcall(function() actuator:Destroy() end) end
+            if attachment then pcall(function() attachment:Destroy() end) end
+            if not contactWarning then
+                contactWarning=true;warn("[shitaro/movement] contact push unavailable: "..tostring(err))
+            end
+            return nil
+        end
+        return {root=root,attachment=attachment,actuator=actuator,original=original}
+    end
+    function contactAdapter.stopSpin(state)
+        if state.actuator then pcall(function() state.actuator:Destroy() end) end
+        if state.attachment then pcall(function() state.attachment:Destroy() end) end
+        -- Do not leave our own character spinning. Preserve X/Z and only
+        -- correct a high positive Y spin consistent with our actuator.
+        pcall(function()
+            local r=state.root
+            if r and r.Parent and not r.Anchored then
+                local v=r.AssemblyAngularVelocity
+                if v.Y>25 then
+                    local oldY=math.max(-20,math.min(20,state.original.Y))
+                    r.AssemblyAngularVelocity=Vector3.new(v.X,oldY,v.Z)
+                end
+            end
+        end)
+    end
+    local contact=contactFactory(contactAdapter)
+
     local strings={
         en={ ["movement.panel"]="movement",["movement.speed"]="fast walk",
             ["movement.speedValue"]="walk speed",["movement.jump"]="long jump",
             ["movement.jumpValue"]="jump power",["movement.fall"]="slow fall",
-            ["movement.fallValue"]="fall gravity",["movement.hint"]="Local changes; the game may limit them." },
+            ["movement.fallValue"]="fall gravity",["movement.contact"]="touch push (test)",["movement.hint"]="Touch push may spin you too." },
         ru={ ["movement.panel"]="движение",["movement.speed"]="быстрая ходьба",
             ["movement.speedValue"]="скорость",["movement.jump"]="дальний прыжок",
             ["movement.jumpValue"]="сила прыжка",["movement.fall"]="плавное падение",
-            ["movement.fallValue"]="сила падения",["movement.hint"]="Локально; игра может ограничивать." },
+            ["movement.fallValue"]="сила падения",["movement.contact"]="отталкивание (тест)",["movement.hint"]="Отталкивание может вращать и вас." },
     }
     for lang,items in pairs(strings) do
         for key,value in pairs(items) do ctx.locale[lang][key]=value end
@@ -81,7 +170,7 @@ return function(ctx)
 
     local scroll=ctx.pageScroll(ctx.tabs[4].page,"MovementScroll")
     ctx.panelWidths[scroll]=350
-    local card=ctx.previewPanel(scroll,"movement.panel",1,7)
+    local card=ctx.previewPanel(scroll,"movement.panel",1,8)
     local function toggle(index,labelKey,field)
         local row,label=ctx.previewRow(card,index,"",true)
         ctx.localize(label,labelKey)
@@ -95,8 +184,9 @@ return function(ctx)
         corner(knob,UDim.new(1,0))
         local hit=make("TextButton",{Name="Movement"..field.."Toggle",Size=UDim2.fromScale(1,1),ZIndex=5},row)
         connect(hit.Activated,function()
-            local on=not movement[field.."Enabled"]
-            movement.setEnabled(field,on)
+            local on
+            if field=="contact" then on=not contact.enabled;contact.setEnabled(on)
+            else on=not movement[field.."Enabled"];movement.setEnabled(field,on) end
             ctx.animate(track,{BackgroundColor3=on and colors.accent or Color3.new(1,1,1),
                 BackgroundTransparency=on and 0.35 or 0.86})
             ctx.animate(knob,{Position=UDim2.new(0,on and 14 or 2,0.5,0),
@@ -115,24 +205,29 @@ return function(ctx)
         slider.set(movement[field],false)
     end
     toggle(1,"movement.speed","speed")
-    slider(2,"movement.speedValue","speed",1,120,"")
+    slider(2,"movement.speedValue","speed",1,200,"")
     toggle(3,"movement.jump","jump")
     slider(4,"movement.jumpValue","jumpPower",20,140,"")
     toggle(5,"movement.fall","fall")
     slider(6,"movement.fallValue","fallPercent",10,100,"%")
-    local _,hint=ctx.previewRow(card,7,"",true)
+    toggle(7,"movement.contact","contact")
+    local _,hint=ctx.previewRow(card,8,"",true)
     hint.Size=UDim2.new(1,-24,1,0);hint.TextSize=11;hint.TextWrapped=true
     ctx.localize(hint,"movement.hint")
     ctx.layoutPreview()
 
     connect(RunService.Heartbeat,function()
-        if uiState.closed then movement.shutdown();return end
+        if uiState.closed then movement.shutdown();contact.shutdown();return end
         local ok,err=pcall(movement.step)
         if not ok and not fallWarning then
             fallWarning=true;warn("[shitaro/movement] update failed: "..tostring(err))
         end
+        local contactOk,contactErr=pcall(contact.step)
+        if not contactOk and not contactWarning then
+            contactWarning=true;warn("[shitaro/movement] contact update failed: "..tostring(contactErr))
+        end
     end)
     -- The hub's shared Destroying handler disconnects ctx connections first.
     -- Use a separate listener so shutdown still restores properties and forces.
-    gui.Destroying:Connect(function() movement.shutdown() end)
+    gui.Destroying:Connect(function() movement.shutdown();contact.shutdown() end)
 end
