@@ -1,12 +1,13 @@
--- Opt-in ownership-checked contact impulse and independent local spin.
--- The adapter owns subscriptions and physics; no ownership is forced.
+-- Opt-in contact experiment and continuous local spin. No ownership is forced.
+-- Spinning can throw the local character as well as (or instead of) a target.
 return function(adapter)
     local c={enabled=false,alwaysEnabled=false}
-    local character,humanoid,root,disconnect,spin
-    local nextAllowed,alwaysRetryAt=0,0
+    local character,humanoid,root,disconnect,spin,spinMode
+    local nextAllowed,spinUntil,alwaysRetryAt=0,0,0
     local closed=false
     local function stopSpin()
         if spin then pcall(adapter.stopSpin,spin);spin=nil end
+        spinMode=nil;spinUntil=0
     end
     local function stopWatching()
         if disconnect then pcall(disconnect);disconnect=nil end
@@ -15,11 +16,12 @@ return function(adapter)
         stopSpin();stopWatching()
         character,humanoid,root=nil,nil,nil
     end
-    local function startSpin()
+    local function startSpin(mode,now)
         stopSpin()
         local ok,result=pcall(adapter.startSpin,root,humanoid)
         if not ok or not result then return false end
-        spin=result
+        spin=result;spinMode=mode
+        if mode=="contact" then spinUntil=now+0.6 end
         return true
     end
     local function touched(otherPart)
@@ -30,10 +32,16 @@ return function(adapter)
         if now<nextAllowed then return end
         local eligible,target=adapter.isOtherPlayerPart(otherPart,r)
         if not eligible then return end
-        -- Never fall back to spinning our own character on touch: that can
-        -- throw the user instead. Rate-limit even failed/unavailable attempts.
+        -- Prefer a direct push only when ownership can be verified. Otherwise
+        -- briefly spin our own character: collision results are unpredictable.
+        -- Rate-limit even failed attempts and never stack two spin actuators.
         nextAllowed=now+1
-        if adapter.tryOwnedPush and target then pcall(adapter.tryOwnedPush,target,r) end
+        local attempted=false
+        if adapter.tryOwnedPush and target then
+            local ok,result=pcall(adapter.tryOwnedPush,target,r)
+            attempted=ok and result==true
+        end
+        if not attempted and not c.alwaysEnabled then startSpin("contact",now) end
     end
     function c.step()
         if closed then return end
@@ -63,16 +71,17 @@ return function(adapter)
             end
         end
         if c.alwaysEnabled then
-            if not spin and now>=alwaysRetryAt then
-                if not startSpin() then alwaysRetryAt=now+1 end
+            if spinMode~="always" and now>=alwaysRetryAt then
+                if not startSpin("always",now) then alwaysRetryAt=now+1 end
             end
-        elseif spin then
+        elseif spinMode=="always" or (spinMode=="contact" and now>=spinUntil) then
             stopSpin()
         end
     end
     function c.setEnabled(enabled)
         if closed then return end
         c.enabled=enabled==true
+        if not c.enabled and spinMode=="contact" then stopSpin() end
         c.step()
     end
     function c.setAlways(enabled)

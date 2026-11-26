@@ -89,7 +89,7 @@ sliders.Movementspeed.set(200,true);speed.Activated:Fire();assert(hum.WalkSpeed=
 sliders.Movementspeed.set(65,true);assert(hum.WalkSpeed==65)
 sliders.MovementjumpPower.set(80,true);jump.Activated:Fire();assert(hum.JumpPower==80)
 fall.Activated:Fire();assert(#created==0,"ground does not create a force")
--- Contact mode does not spin the local character when ownership is absent.
+-- Contact falls back to a short local spin when ownership is unavailable.
 local otherChar,otherHum,otherRoot=character();local otherPlayer={Character=otherChar};playersByCharacter[otherChar]=otherPlayer
 otherRoot.Position=Vector3.new(2,0,0)
 contact.Activated:Fire();local objectsBeforeContact=#created
@@ -97,18 +97,27 @@ root.Touched:Fire(root);assert(#created==objectsBeforeContact,"own character ign
 otherRoot.Position=Vector3.new(30,0,0);root.Touched:Fire(otherRoot);assert(#created==objectsBeforeContact,"distant player ignored")
 otherRoot.Position=Vector3.new(2,0,0);hum.SeatPart={};root.Touched:Fire(otherRoot);assert(#created==objectsBeforeContact,"seated avatar ignored");hum.SeatPart=nil
 root.Touched:Fire(otherRoot)
-assert(#created==objectsBeforeContact and not otherRoot.lastImpulse,"no local spin or unowned impulse")
+local contactAttachment,contactSpin,contactUpright=created[#created-2],created[#created-1],created[#created]
+assert(contactSpin.ClassName=="AngularVelocity" and contactSpin.AngularVelocity.Y==60 and contactUpright.ClassName=="AlignOrientation"
+    and contactUpright.PrimaryAxis.Y==1 and hum.AutoRotate==false and not otherRoot.lastImpulse,"unowned contact creates stabilized spin")
+mockTime=0.61;root.AssemblyAngularVelocity=Vector3.new(3,60,4);heartbeat:Fire()
+assert(contactAttachment.destroyed and contactSpin.destroyed and contactUpright.destroyed and hum.AutoRotate==true
+    and root.AssemblyAngularVelocity.Y==0 and root.AssemblyAngularVelocity.X==3,"contact spin and stabilizer are cleaned up")
 _G.isnetworkowner=function(target) return target==otherRoot end
-mockTime=1.1;root.Touched:Fire(otherRoot)
+mockTime=1.1;local count=#created;root.Touched:Fire(otherRoot)
 assert(otherRoot.lastImpulse and otherRoot.lastImpulse.X==800 and otherRoot.lastImpulse.Y==200
-    and #created==objectsBeforeContact,"owned target receives directional impulse without local spin")
+    and #created==count,"owned target receives directional impulse without local spin")
 otherRoot.lastImpulse=nil;root.Touched:Fire(otherRoot);assert(not otherRoot.lastImpulse,"owned impulses respect cooldown")
 _G.isnetworkowner=function() return false end
-mockTime=2.2;root.Touched:Fire(otherRoot);assert(not otherRoot.lastImpulse and #created==objectsBeforeContact,"unowned target is untouched")
+mockTime=2.2;root.Touched:Fire(otherRoot);assert(not otherRoot.lastImpulse and #created==count+3,"unowned target gets fallback spin")
+contactSpin,contactUpright=created[#created-1],created[#created];contact.Activated:Fire()
+assert(contactSpin.destroyed and contactUpright.destroyed and hum.AutoRotate==true,"toggle stops contact spin")
 _G.isnetworkowner=function() error("ownership check failed") end
-mockTime=3.3;root.Touched:Fire(otherRoot);assert(not otherRoot.lastImpulse and #created==objectsBeforeContact,"failed ownership check is safe")
+contact.Activated:Fire();mockTime=3.3;root.Touched:Fire(otherRoot)
+assert(not otherRoot.lastImpulse and created[#created-1].ClassName=="AngularVelocity","failed ownership check falls back to local spin")
+contactSpin=created[#created-1];contact.Activated:Fire();assert(contactSpin.destroyed)
 _G.isnetworkowner=nil
-contact.Activated:Fire();mockTime=4.4;root.Touched:Fire(otherRoot);assert(#created==objectsBeforeContact,"disabled contact unsubscribes")
+mockTime=4.4;count=#created;root.Touched:Fire(otherRoot);assert(#created==count,"disabled contact unsubscribes")
 hum.State=Enum.HumanoidStateType.Freefall;hum.FloorMaterial=Enum.Material.Air;root.AssemblyLinearVelocity={Y=-20}
 heartbeat:Fire()
 local attachment,force=created[#created-1],created[#created]
@@ -132,15 +141,17 @@ speed.Activated:Fire();jump.Activated:Fire();fall.Activated:Fire();force=created
 assert(hum.WalkSpeed==65 and hum.JumpPower==80 and force.Parent==root)
 contact.Activated:Fire();local oldCreated=#created
 oldRoot.Touched:Fire(otherRoot);assert(#created==oldCreated,"old character has no active contact listener")
-mockTime=5;root.Touched:Fire(otherRoot);assert(#created==oldCreated,"contact never spins the user")
--- Continuous mode is independent of the contact switch.
+mockTime=5;root.Touched:Fire(otherRoot)
+local oldContactSpin,oldContactUpright=created[#created-1],created[#created]
+assert(oldContactSpin.ClassName=="AngularVelocity" and oldContactSpin.Parent==root,"contact works after respawn")
+-- Continuous mode replaces the transient spin without stacking actuators.
 always.Activated:Fire();local alwaysSpin,alwaysUpright=created[#created-1],created[#created]
-assert(alwaysSpin.ClassName=="AngularVelocity" and alwaysSpin.Parent==root)
-assert(alwaysSpin.AngularVelocity.Y==14 and alwaysUpright.PrimaryAxis.Y==1 and hum.AutoRotate==false,"continuous mode uses a gentler upright spin")
+assert(oldContactSpin.destroyed and oldContactUpright.destroyed and alwaysSpin.ClassName=="AngularVelocity" and alwaysSpin.Parent==root)
+assert(alwaysSpin.AngularVelocity.Y==60 and alwaysUpright.PrimaryAxis.Y==1 and hum.AutoRotate==false,"continuous mode uses a faster upright spin")
 local countBeforeSpinTouch=#created;mockTime=10;root.Touched:Fire(otherRoot);heartbeat:Fire()
 assert(#created==countBeforeSpinTouch and not alwaysSpin.destroyed,"continuous mode ignores touch-triggered duplicates")
 contact.Activated:Fire();assert(not alwaysSpin.destroyed,"continuous mode independent of touch toggle")
-root.AssemblyAngularVelocity=Vector3.new(0,14,0)
+root.AssemblyAngularVelocity=Vector3.new(0,60,0)
 always.Activated:Fire();assert(alwaysSpin.destroyed and alwaysUpright.destroyed and hum.AutoRotate==true and root.AssemblyAngularVelocity.Y==0,"turning off stops continuous spin immediately")
 -- Free camera and seating release the stabilizer and restore AutoRotate.
 always.Activated:Fire();alwaysSpin,alwaysUpright=created[#created-1],created[#created]
@@ -159,7 +170,7 @@ local failedAttachment,failedActuator=created[#created-1],created[#created]
 assert(failedAttachment.destroyed and failedActuator.destroyed and hum.AutoRotate==true,"failed setup rolls back")
 failClass=nil;mockTime=12;heartbeat:Fire();alwaysSpin,alwaysUpright=created[#created-1],created[#created]
 assert(alwaysSpin.Parent==root and alwaysUpright.Parent==root and hum.AutoRotate==false,"spin retries after unsupported setup")
-root.AssemblyAngularVelocity=Vector3.new(0,14,0)
+root.AssemblyAngularVelocity=Vector3.new(0,60,0)
 gui.Destroying:Fire()
 assert(alwaysSpin.destroyed and alwaysUpright.destroyed and hum.AutoRotate==true and root.AssemblyAngularVelocity.Y==0,"closing hub clears continuous spin")
 assert(hum.WalkSpeed==16 and hum.JumpPower==50,"closing hub restores movement even after shared connections disconnect")

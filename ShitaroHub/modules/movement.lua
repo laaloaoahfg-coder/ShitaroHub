@@ -67,8 +67,8 @@ return function(ctx)
     end
     local movement=controllerFactory(adapter)
 
-    -- Contact impulses are attempted only with positively verified local
-    -- ownership. Continuous spin is a separate, local-only experiment.
+    -- If direct target ownership is unavailable, contact triggers a brief
+    -- local spin. Either spin can throw the local avatar instead of a target.
     local contactAdapter={}
     contactAdapter.now=os.clock
     contactAdapter.suspended=adapter.suspended
@@ -145,7 +145,7 @@ return function(ctx)
             actuator=Instance.new("AngularVelocity")
             actuator.Name="ShitaroContactPush";actuator.Attachment0=attachment
             actuator.RelativeTo=Enum.ActuatorRelativeTo.World
-            actuator.AngularVelocity=Vector3.new(0,14,0)
+            actuator.AngularVelocity=Vector3.new(0,60,0)
             actuator.MaxTorque=2000000;actuator.Parent=root
             -- Align only the upright axis; do not resist yaw/spinning.
             upright=Instance.new("AlignOrientation")
